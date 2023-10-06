@@ -1,0 +1,453 @@
+---
+title: "Indicateurs Midas - Allstats"
+author: "Yoan ROBIN"
+date: "15/03/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo = FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(echo = TRUE)
+library(parquetize)
+library(dplyr)
+library(arrow)
+library(haven)
+library(lubridate)
+```
+
+## Import des données et conversion en parquet
+
+Le programme suivant permet d'enregistrer en parquet les tables sas mises à disposition par le CASD. 
+
+```{r}
+### /!\ à ne faire qu'une fois, une fois les tables enregistrées en parquet passer directement à l'étape suivante
+
+
+table_to_parquet(path_to_table = "//casd.fr/casdfs/Projets/MIDARES/Data/MIDAS_MIDAS_2022T2/CNAF Minima sociaux/2020/cnaf_indiv_1220.sas7bdat", 
+                 path_to_parquet = "C:\\Users\\Public\\Documents\\MiDAS_parquet\\Prestations")
+
+table_to_parquet(path_to_table = "//casd.fr/casdfs/Projets/MIDARES/Data/MIDAS_MIDAS_2022T2/CNAF Ménages/2020/cnaf_menage_1220.sas7bdat", 
+                 path_to_parquet = "C:\\Users\\Public\\Documents\\MiDAS_parquet\\Ménages")
+```
+
+
+
+## Introduction
+
+Le document présent permet de construire des indicateurs cibles à partir du fichier Cnaf des allocataires (Allstat-FR6) compris dans l'appariement Midas, en comparant les résultats obtenus aux cibles publiées par la Cnaf et la Drees à une certaine date. 
+
+```{r}
+#On fixe les chemins pour les bases CNAF
+tables_parquet_cnaf_indiv <- open_dataset("C:/Users/Public/Documents/MiDAS_parquet/Prestations")
+tables_parquet_cnaf_menage <- open_dataset("C:/Users/Public/Documents/MiDAS_parquet/Ménages")
+```
+
+
+*Champ Cnaf :* XXXX
+
+## Nombre d'allocataires de l'AAH
+
+### Nombre d'allocataires de l'AAH toute catégorie confondue
+
+```{r}
+#sans distinguer les différentes AAH
+
+nballocAAH <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>%
+  filter((AAHVERS!="Pas d'allocation handicapé adulte") ) %>% 
+  group_by(DTREFFRE) %>% 
+  summarise(id_midas = n_distinct(id_midas), 
+            id_menage = n_distinct(id_menage)) %>%
+  collect() %>% 
+  arrange(DTREFFRE)
+
+
+
+#en distinguant les taux d'incapacité
+
+nballocAAH_incapacité <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>%
+  filter((AAHVERS!="Pas d'allocation handicapé adulte") ) %>% 
+  group_by(DTREFFRE, CINCAAH) %>% 
+  summarise(id_midas = n_distinct(id_midas), 
+            id_menage = n_distinct(id_menage)) %>%
+  collect() %>% 
+  arrange(DTREFFRE, CINCAAH)
+
+
+```
+
+
+###Taux d'entrées et de sorties
+
+Le taux d'entrée se calcule comme la part des bénéficiaires en décembre d'une année, qui n'étaient pas bénéficiaires en décembre de l'année précédente.
+Le taux de sortie se calcule comme la part des bénéficiaires en décembre d'une année, qui ne sont plus bénéficiaires en décembre de l'année suivante.
+
+```{r}
+#Taux d'entrée
+
+entreeAAH <-  tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>%
+  filter(AAHVERS!="Pas d'allocation handicapé adulte" & year(DTREFFRE)==2020 & month(DTREFFRE)==12) 
+
+nbentreeAAH <-  entreeAAH %>% 
+  summarise(AAH2020 = n_distinct(id_midas)) %>%
+  collect()
+
+entreeAAH2020 <- tables_parquet_cnaf_indiv %>%
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>%
+  filter(AAHVERS!="Pas d'allocation handicapé adulte" & year(DTREFFRE)==2019 & month(DTREFFRE)==12) %>%   right_join(entreeAAH, by =c("id_midas")) %>% 
+  summarise(AAH2020_2019 = n_distinct(id_midas)) %>%
+  collect() %>% 
+  cbind(nbentreeAAH) %>% 
+  mutate(p=1-(AAH2020_2019/AAH2020)) %>% 
+  collect()
+
+#Taux de sortie
+
+sortieAAH <-  tables_parquet_cnaf_indiv %>%  
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>%
+  filter(AAHVERS!="Pas d'allocation handicapé adulte" & year(DTREFFRE)==2019 & month(DTREFFRE)==12) 
+
+AAH2019 <-  sortieAAH %>% 
+  summarise(AAH2020 = n_distinct(id_midas)) %>%
+  collect()
+
+sortieAAH2020 <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>%
+  filter(AAHVERS!="Pas d'allocation handicapé adulte" & year(DTREFFRE)==2020 & month(DTREFFRE)==12) %>%   right_join(sortieAAH, by =c("id_midas")) %>% 
+  summarise(AAH2020_2019 = n_distinct(id_midas)) %>%
+  collect() %>% 
+  cbind(AAH2019) %>% 
+  mutate(p=1-(AAH2020_2019/AAH2019)) %>% 
+  collect()
+
+
+```
+
+
+### Caractéritiques des allocataires de l'AAH
+
+```{r}
+
+
+
+caractAAH <- tables_parquet_cnaf_indiv %>% 
+  filter(AAHVERS!="Pas d'allocation handicapé adulte" & year(DTREFFRE)==2020 & month(DTREFFRE)==12) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>%
+  distinct(id_midas) %>% 
+  collect()
+
+
+menage2020 <- tables_parquet_cnaf_menage %>% 
+  filter(year(DTREFFRE)==2020 & month(DTREFFRE)==12) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>%
+  select(SITFAM, PRESCONJ, NBENLEFA, id_midas, id_menage) %>% 
+  collect() %>% 
+  distinct(id_midas, .keep_all = TRUE)
+
+
+AAH <- caractAAH %>% 
+  left_join(menage2020, by=c("id_menage")) %>%   #join by NORDALLC pour avoir toutes les infos ? 1 dossier ménage par individu ou par ménage ? 
+  collect()
+
+
+familleAAH <- AAH %>% 
+  mutate(situation_fam = case_when(
+    PRESCONJ == 0 & NBENLEFA == 0 ~ "Célibataire sans enfant", 
+    PRESCONJ == 0 & NBENLEFA > 0 ~ "Célibataire avec enfant(s)",
+    PRESCONJ == 2 & NBENLEFA == 0 ~ "Couple sans enfant",
+    PRESCONJ == 2 & NBENLEFA > 0 ~ "Couple avec enfant(s)",
+    is.na(PRESCONJ) | is.na(NBENLEFA) ~ "inconnue"
+  )) %>% 
+  group_by(situation_fam) %>% 
+  summarise(familleAAH_ind = n_distinct(id_midas), 
+            familleAAH_men = n_distinct(id_menage)) %>% 
+  collect()
+
+
+
+  
+```
+
+
+
+
+```{r}
+
+
+allocAAHRSA <- tables_parquet_cnaf_indiv %>%  
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>%
+  filter(AAHVERS!="Pas d'allocation handicapé adulte"  & (RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") & year(DTREFFRE)==2020) %>% 
+  group_by(DTREFFRE) %>% 
+  summarise(allocAAHRSA = n_distinct(id_midas)) %>%
+  collect() %>% 
+  arrange(DTREFFRE) %>% 
+  left_join(allocataireAAH, by=c("DTREFFRE")) %>% 
+  mutate(p=allocAAHRSA/allocataireAAH)
+
+
+    
+
+
+##caractéristiques des allocataires/bénéficiaires
+#allocataires de l'AAH
+
+incapaciteAAH <- tables_parquet_cnaf_indiv %>% 
+  filter(AAHVERS!="Pas d'allocation handicapé adulte" & year(DTREFFRE)==2020 & month(DTREFFRE)==12) %>% collect() %>% 
+  distinct(id_midas, .keep_all = TRUE) %>% 
+  group_by(CINCAAH) %>%
+  summarise(incapaciteAAH = n_distinct(id_midas)) %>%
+  collect()
+
+caractAAH <- tables_parquet_cnaf_indiv %>% 
+  filter(AAHVERS!="Pas d'allocation handicapé adulte" & year(DTREFFRE)==2020 & month(DTREFFRE)==12) %>% 
+  distinct(id_midas) %>% 
+  collect()
+
+
+menage2020 <- tables_parquet_cnaf_menage %>% 
+  filter(year(DTREFFRE)==2020 & month(DTREFFRE)==12) %>% 
+  select(SITFAM, PRESCONJ, NBENLEFA, id_midas) %>% 
+  collect() %>% 
+  distinct(id_midas, .keep_all = TRUE)
+
+
+AAH <- caractAAH %>% 
+  left_join(menage2020, by=c("id_midas")) %>%   #join by NORDALLC pour avoir toutes les infos ? 1 dossier ménage par individu ou par ménage ? 
+  collect()
+
+
+familleAAH <- AAH %>% 
+  mutate(situation_fam = case_when(
+    PRESCONJ == 0 & NBENLEFA == 0 ~ "Célibataire sans enfant", 
+    PRESCONJ == 0 & NBENLEFA > 0 ~ "Célibataire avec enfant(s)",
+    PRESCONJ == 2 & NBENLEFA == 0 ~ "Couple sans enfant",
+    PRESCONJ == 2 & NBENLEFA > 0 ~ "Couple avec enfant(s)",
+    is.na(PRESCONJ) | is.na(NBENLEFA) ~ "inconnue"
+  )) %>% 
+  group_by(situation_fam) %>% 
+  summarise(familleAAH = n_distinct(id_midas)) %>% 
+  collect()
+
+
+
+sexeAAH <- AAH %>% 
+  group_by()
+  summarise(sexeAAH = n_distinct(id_midas)) %>% 
+  collect()
+
+
+
+```
+
+
+
+```{r indemnises_tot, eval = FALSE}
+test2 <- cnaf_indiv_1221_p %>% 
+  mutate(RSA = case_when(
+    RSAVERS != "Pas de droit RSA" &  MTRSAVER>0 ~ "OUI",
+    RSAVERS != "Pas de droit RSA" &  MTRSAVER==0 ~ "OUI mais 0",
+    ~ "NON"
+    )) %>% 
+  group_by(RSAVERS, PPAVERS, RSA) %>% 
+  summarise(n=n()) %>% 
+  collect()
+
+
+write.table(test, file = paste0(path_parquet,"stats", ".xls"),sep ="\t", row.names = FALSE)
+
+
+test<-c("a","a","ab","bb","b")
+doublonstest<-which(duplicated(test))
+test2<-test[-doublonstest]
+test
+test2
+
+presta_period <- cnaf_indiv_1221_p %>% 
+  #filter((RSAVERS=="RSA droit" | RSAVERS=="RSA jeune") & MTRSAVER>0) %>%
+  filter(RSAVERS=="RSA droit") %>%
+  collect() %>% 
+  #arrange(NORDALLC) %>% 
+  distinct(id_midas, .keep_all = TRUE) %>% collect() %>% 
+  distinct(NORDALLC, .keep_all = TRUE) %>% collect()
+  select(id_midas, RSAVERS, NUMCAF, NORDALLC)
+  
+  
+  presta_period <- cnaf_indiv_1221_p %>% 
+  #filter((RSAVERS=="RSA droit" | RSAVERS=="RSA jeune") & MTRSAVER>0) %>%
+  filter(PPAVERS!="Pas de Prime d'Activité") %>%
+  collect() %>% 
+  #arrange(NORDALLC) %>% 
+  distinct(id_midas, .keep_all = TRUE) %>% collect() %>% 
+  distinct(NORDALLC, .keep_all = TRUE) %>% collect()
+#Cette table comprend tous les individus de +18 ans dans un ménage qui perçoit le RSA sur la période filtrée.
+#Le nombre de lignes de la table collectée correspond au nombre d'indemnisés.
+
+RSA_men_tot <- presta_period %>% 
+  inner_join(men_period, by = c("id_midas", "NUMCAF", "NORDALLC")) %>% 
+  arrange(id_midas, NUMCAF, NORDALLC) %>% 
+  collect() %>% 
+  distinct(id_midas, .keep_all = TRUE) %>% 
+  distinct(NUMCAF, NORDALLC, .keep_all = TRUE) %>% 
+  collect()
+#Cette table comprend tous les individus porteur de dossier dans un ménage qui perçoit le RSA sur la période filtrée.
+#Le nombre de lignes de la table collectée correspond au nombre de ménages bénéficiaires du RSA.
+
+```
+
+test <-  ech_men_p %>% 
+  filter(year(DTREFFRE) == (year(date_Date)-1) & month(ydm(DTREFFRE)) == month(date_Date) & (RSAVERS=="RSA droit" | RSAVERS=="RSA jeune") & MTRSAVER>0) %>% 
+  select(id_midas, NUMCAF, NORDALLC, MTRSAVER) %>% 
+  arrange(id_midas, NUMCAF, NORDALLC) %>% 
+  collect() %>% 
+  distinct(id_midas, .keep_all = TRUE) %>% 
+  distinct(NUMCAF, NORDALLC, .keep_all = TRUE) %>% 
+  arrange(NUMCAF, NORDALLC) %>% 
+  collect()
+
+test2 <- ech_ms_p %>% 
+  filter(year(DTREFFRE) == (year(date_Date)-1) & month(ydm(DTREFFRE)) == month(date_Date) & (RSAVERS=="RSA droit" | RSAVERS=="RSA jeune") & MTRSAVER>0) %>%
+  select(id_midas, RSAVERS, NUMCAF, NORDALLC, MTRSAVER) %>% 
+  collect()
+  
+test3 <- test2 %>% 
+  inner_join(test, by = c("id_midas", "NUMCAF", "NORDALLC")) %>% 
+  arrange(id_midas, NORDALLC) %>% 
+  collect() %>% 
+  distinct(id_midas, .keep_all = TRUE) %>% 
+  distinct(NUMCAF, NORDALLC, .keep_all = TRUE) %>% 
+  collect()
+  
+test4 <- test3 %>% 
+filter(MTRSAVER.x!=MTRSAVER.y) %>% 
+collect()
+#pourquoi des montants différents ? 
+
+
+
+## Nombre de bénéficiaires de l'AAH
+
+### Nombre de bénéficiaires de l'AAH en décembre 2020
+
+Pour calculer le nombre de foyers bénéficiaires en décembre 2020, on utilise la table ménage de Allstat-FR6 qui contient les données du ménage chaque mois.
+
+```{r indemnises_tot, eval = FALSE}
+
+test <- cnaf_indiv_1221_p %>% 
+  group_by(RSAVERS, PPAVERS, AAHVERS) %>% 
+  summarise(n=n()) %>% 
+  collect()
+
+
+
+write.table(test, file = paste0(path_parquet,"stats", ".xls"),sep ="\t", row.names = FALSE)
+
+
+
+
+presta_period <- ech_ms_p %>% 
+  filter(year(DTREFFRE) == (year(date_Date)-1) & month(ydm(DTREFFRE)) == month(date_Date) & MTAAHVER>0) %>%
+  #select(id_midas, DTREFFRE, AAHVERS, COMPLAAH, MTCAAHVE, CINCAAH, PENAAHVE, AAHPERE, MTAAHVER, NUMCAF, NORDALLC) %>% 
+  collect() %>% 
+  distinct(id_midas, .keep_all = TRUE) %>% 
+  collect()
+
+menage_period_sexe_conj <- ech_men_p %>% 
+  filter(year(DTREFFRE) == (year(date_Date)-1) & month(ydm(DTREFFRE)) == month(date_Date) & MTAAHVER>0 & SEXECONJ %in% c(1,2)) %>%
+  select(id_midas, NUMCAF, NORDALLC, SEXECONJ, PRESCONJ) %>% 
+  rename(SEXE=SEXECONJ) %>% 
+  collect() %>% 
+  distinct(id_midas, .keep_all = TRUE) %>% 
+  collect()
+
+#pourquoi #menage_period_sexe_conj+#menage_period_sexe_resp <> #presta_period ?
+
+menage_period_sexe_resp <- ech_men_p %>% 
+  filter(year(DTREFFRE) == (year(date_Date)-1) & month(ydm(DTREFFRE)) == month(date_Date) & MTAAHVER>0) %>%
+  select(id_midas, NUMCAF, NORDALLC, SEXE, PRESCONJ) %>% 
+  collect() %>% 
+  distinct(id_midas, .keep_all = TRUE) %>% 
+  collect()
+
+
+incapacite <- menage_period %>% 
+  mutate(n_tot = n_distinct(id_midas)) %>%
+  distinct() %>% 
+  group_by(SEXE) %>% 
+  summarise(n=n(), pct=(n()/n_tot*100), .groups = "drop") %>% 
+  distinct()
+
+genre <-
+  group_by(CINCAAH) %>% 
+  summarise(n=n())
+
+```
+
+
+## Nombre de foyers bénéficiaires de la PPA
+
+### Nombre de foyers bénéficiaires de la PPA en décembre 2021
+
+Pour calculer le nombre de foyers bénéficiaires en décembre 2021, on utilise la table ménage de Allstat-FR6 qui contient les données du ménage chaque mois.
+
+
+```{r indemnises_tot, eval = FALSE}
+men_period <- ech_men_p %>% 
+   filter(year(DTREFFRE) == (year(date_Date)) & month(ydm(DTREFFRE)) == month(date_Date) & (PPAVERS!="Pas de Prime d'Activité" ) & MTPPAVER>0) %>% 
+  select(id_midas, PPAVERS, MTPPAVER, NUMCAF, NORDALLC) %>%
+  collect() %>% 
+  distinct(id_midas, .keep_all = TRUE) %>% 
+  distinct(NUMCAF, NORDALLC, .keep_all = TRUE) %>% 
+  collect()
+
+
+presta_period <- ech_ms_p %>% 
+  filter(year(DTREFFRE) == (year(date_Date)) & month(ydm(DTREFFRE)) == month(date_Date) & (PPAVERS!="Pas de Prime d'Activité" ) & MTPPAVER>0) %>%
+  select(id_midas, PPAVERS, MTPPAVER, NUMCAF, NORDALLC) %>% 
+  collect()
+#Cette table comprend tous les individus de +18 ans dans un ménage qui perçoit le RSA sur la période filtrée.
+#Le nombre de lignes de la table collectée correspond au nombre d'indemnisés.
+
+PPA_men_tot <- presta_period %>% 
+  inner_join(men_period, by = c("id_midas", "NUMCAF", "NORDALLC")) %>% 
+  arrange(id_midas, NUMCAF, NORDALLC) %>% 
+  collect() %>% 
+  distinct(id_midas, .keep_all = TRUE) %>% 
+  distinct(NUMCAF, NORDALLC, .keep_all = TRUE) %>% 
+  collect()
+#Cette table comprend tous les individus porteur de dossier dans un ménage qui perçoit le RSA sur la période filtrée.
+#Le nombre de lignes de la table collectée correspond au nombre de ménages bénéficiaires du RSA.
+
+```
+
+test <-  ech_men_p %>% 
+  filter(year(DTREFFRE) == (year(date_Date)-1) & month(ydm(DTREFFRE)) == month(date_Date) & (RSAVERS=="RSA droit" | RSAVERS=="RSA jeune") & MTRSAVER>0) %>% 
+  select(id_midas, NUMCAF, NORDALLC, MTRSAVER) %>% 
+  arrange(id_midas, NUMCAF, NORDALLC) %>% 
+  collect() %>% 
+  distinct(id_midas, .keep_all = TRUE) %>% 
+  distinct(NUMCAF, NORDALLC, .keep_all = TRUE) %>% 
+  arrange(NUMCAF, NORDALLC) %>% 
+  collect()
+
+test2 <- ech_ms_p %>% 
+  filter(year(DTREFFRE) == (year(date_Date)-1) & month(ydm(DTREFFRE)) == month(date_Date) & (RSAVERS=="RSA droit" | RSAVERS=="RSA jeune") & MTRSAVER>0) %>%
+  select(id_midas, RSAVERS, NUMCAF, NORDALLC, MTRSAVER) %>% 
+  collect()
+  
+test3 <- test2 %>% 
+  inner_join(test, by = c("id_midas", "NUMCAF", "NORDALLC")) %>% 
+  arrange(id_midas, NUMCAF, NORDALLC) %>% 
+  collect() %>% 
+  distinct(id_midas, .keep_all = TRUE) %>% 
+  distinct(NUMCAF, NORDALLC, .keep_all = TRUE) %>% 
+  collect()
+  
+test4 <- test3 %>% 
+filter(MTRSAVER.x!=MTRSAVER.y) %>% 
+collect()
+#pourquoi des montants différents ? 
+

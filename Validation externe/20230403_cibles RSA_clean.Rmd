@@ -1,0 +1,502 @@
+---
+title: "Indicateurs Midas - Allstats"
+author: "Yoan ROBIN"
+date: "15/03/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo = FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(echo = TRUE)
+library(parquetize)
+library(dplyr)
+library(arrow)
+library(haven)
+library(lubridate)
+```
+
+## Import des données et conversion en parquet
+
+Le programme suivant permet d'enregistrer en parquet les tables sas mises à disposition par le CASD. 
+
+```{r}
+### /!\ à ne faire qu'une fois, une fois les tables enregistrées en parquet passer directement à l'étape suivante
+
+
+table_to_parquet(path_to_table = "//casd.fr/casdfs/Projets/MIDARES/Data/MIDAS_MIDAS_2022T2/CNAF Minima sociaux/2019/cnaf_indiv_1219.sas7bdat", 
+                 path_to_parquet = "C:\\Users\\Public\\Documents\\MiDAS_parquet\\Prestations")
+
+table_to_parquet(path_to_table = "//casd.fr/casdfs/Projets/MIDARES/Data/MIDAS_MIDAS_2022T2/CNAF Ménages/2019/cnaf_menage_1219.sas7bdat", 
+                 path_to_parquet = "C:\\Users\\Public\\Documents\\MiDAS_parquet\\Ménages")
+```
+
+
+
+## Introduction
+
+Le document présent permet de construire des indicateurs cibles à partir du fichier Cnaf des allocataires (Allstat-FR6) compris dans l'appariement Midas, en comparant les résultats obtenus aux cibles publiées par la Cnaf et la Drees à une certaine date. 
+
+```{r}
+#On fixe les chemins pour les bases CNAF
+tables_parquet_cnaf_indiv <- open_dataset("C:/Users/Public/Documents/MiDAS_parquet/Prestations")
+tables_parquet_cnaf_menage <- open_dataset("C:/Users/Public/Documents/MiDAS_parquet/Ménages")
+```
+
+
+*Champ Cnaf :* XXXX
+
+## Nombre de foyers bénéficiaires du RSA
+
+### Nombre de foyers bénéficiaires du RSA toute catégorie confondue (sans et avec majoration pour isolement)
+
+Pour calculer le nombre de foyers bénéficiaires, on utilise la table prestation/individu de Allstat-FR6 qui contient les données relatives aux prestations versées chaque mois.
+
+```{r}
+#Nombre de foyers allocataires du RSA
+nbBRSA <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  #filter(year((DTREFFRE))==2020 & month(DTREFFRE)==12 ) %>% #R confond le mois et le jour
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") ) %>% 
+  group_by(DTREFFRE) %>% 
+  summarise(BRSA_menage = n_distinct(id_menage)) %>%
+  collect() %>% 
+  arrange(DTREFFRE)
+
+#Nombre d'individus bénéficiaires du RSA
+IndBRSAa <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") ) %>% 
+  select(DTREFFRE, RSENAUTC, RSSITFAM, id_menage ) %>% 
+  mutate(nb_ind = case_when(
+    RSSITFAM == "Isolé homme" ~ 1 + RSENAUTC,
+    RSSITFAM == "Isolé femme" ~ 1 + RSENAUTC,
+    RSSITFAM == "Couple" ~ 2 + RSENAUTC, 
+    RSSITFAM == "Sans signification ou inconnue" ~ 0
+    )) %>%
+  select(DTREFFRE, RSENAUTC, id_menage, nb_ind ) %>% 
+  collect() %>% 
+  distinct(DTREFFRE, id_menage, .keep_all=TRUE) %>% 
+  group_by(DTREFFRE) %>% 
+  summarise(BRSA_ind = sum(nb_ind)) %>%
+  collect() %>% 
+  arrange(DTREFFRE)
+
+#Nombre d'adultes bénéficiaires du RSA
+IndBPPAb <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental")) %>% 
+  select(DTREFFRE, RSSITFAM, id_menage ) %>% 
+  mutate(nb_ad = case_when(
+    RSSITFAM == "Isolé homme" ~ 1 ,
+    RSSITFAM == "Isolé femme" ~ 1 ,
+    RSSITFAM == "Couple" ~ 2 , 
+    RSSITFAM == "Sans signification ou inconnue" ~ 0
+    )) %>%
+  select(DTREFFRE, id_menage, nb_ad ) %>% 
+  collect() %>% 
+  distinct(DTREFFRE, id_menage, .keep_all=TRUE) %>% 
+  group_by(DTREFFRE) %>% 
+  summarise(BPPA_ind = sum(nb_ad)) %>%
+  collect() %>% 
+  arrange(DTREFFRE)
+
+
+#Montant des dépenses RSA
+CoutBRSA <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") ) %>% 
+  select(DTREFFRE, id_menage, MTRSAVER) %>% 
+  collect() %>% 
+  distinct(id_menage, DTREFFRE, .keep_all = TRUE) %>% 
+  group_by(DTREFFRE) %>% 
+  summarise(BRSA_cout = sum(MTRSAVER)) %>%
+  collect() %>% 
+  arrange(DTREFFRE)
+```
+
+### Nombre de foyers bénéficiaires du RSA sans et avec majoration pour isolement
+
+
+```{r}
+#Nombre de foyers allocataires du RSA
+nbBRSAtype <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  #filter(year((DTREFFRE))==2020 & month(DTREFFRE)==12 ) %>% #R confond le mois et le jour
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") ) %>% 
+  mutate(RSAtype = case_when(
+    RSAVERS == "RSA jeune" ~ "RSA jeune", 
+    RSAMAJI == "Droit versable" ~ "RSA majoré",
+    RSAMAJI == "Droit suspendu" ~ "RSA non majoré", 
+    RSAMAJI == "Non concerné" ~ "RSA non majoré"
+  )) %>% 
+  group_by(DTREFFRE, RSAtype) %>% 
+  summarise(BRSAtype_menage = n_distinct(id_menage)) %>%
+  collect() %>% 
+  arrange(DTREFFRE, BRSAtype_menage)
+
+#Nombre d'individus bénéficiaires du RSA
+IndBRSAtype <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") ) %>%   
+  mutate(RSAtype = case_when(
+    RSAVERS == "RSA jeune" ~ "RSA jeune", 
+    RSAMAJI == "Droit versable" ~ "RSA majoré",
+    RSAMAJI == "Droit suspendu" ~ "RSA non majoré", 
+    RSAMAJI == "Non concerné" ~ "RSA non majoré"
+  )) %>%
+  select(DTREFFRE, RSENAUTC, RSSITFAM, id_menage, RSAtype) %>% 
+  mutate(nb_ind = case_when(
+    RSSITFAM == "Isolé homme" ~ 1 + RSENAUTC,
+    RSSITFAM == "Isolé femme" ~ 1 + RSENAUTC,
+    RSSITFAM == "Couple" ~ 2 + RSENAUTC, 
+    RSSITFAM == "Sans signification ou inconnue" ~ 0
+    )) %>%
+  select(DTREFFRE, RSENAUTC, id_menage, nb_ind, RSAtype) %>% 
+  collect() %>% 
+  distinct(DTREFFRE, id_menage, .keep_all=TRUE) %>% 
+  group_by(DTREFFRE, RSAtype) %>% 
+  summarise(BRSAtype_ind = sum(nb_ind)) %>%
+  collect() %>% 
+  arrange(DTREFFRE)
+
+
+#Montant des dépenses RSA
+CoutBRSAtype <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") ) %>% 
+  mutate(RSAtype = case_when(
+    RSAVERS == "RSA jeune" ~ "RSA jeune", 
+    RSAMAJI == "Droit versable" ~ "RSA majoré",
+    RSAMAJI == "Droit suspendu" ~ "RSA non majoré", 
+    RSAMAJI == "Non concerné" ~ "RSA non majoré"
+  )) %>%
+  select(DTREFFRE, id_menage, MTRSAVER, RSAtype) %>% 
+  collect() %>% 
+  distinct(id_menage, DTREFFRE, .keep_all = TRUE) %>% 
+  group_by(DTREFFRE, RSAtype) %>% 
+  summarise(BRSA_cout = sum(MTRSAVER)) %>%
+  collect() %>% 
+  arrange(DTREFFRE)
+
+#Nombre de foyers allocataires du RSA par situation familiale
+nbBRSAfam <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  #filter(year((DTREFFRE))==2020 & month(DTREFFRE)==12 ) %>% #R confond le mois et le jour
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") ) %>% 
+  mutate(typefam = case_when(
+    RSSITFAM == "Isolé homme" & RSENAUTC == 0 ~ "Homme sans enfant",
+    RSSITFAM == "Isolé femme" & RSENAUTC == 0 ~ "Femme sans enfant",
+    RSSITFAM == "Couple" & RSENAUTC == 0 ~ "Couple sans enfant", 
+    RSSITFAM == "Isolé homme" & RSENAUTC > 0 ~ "Homme avec enfant",
+    RSSITFAM == "Isolé femme" & RSENAUTC > 0 ~ "Femme avec enfant",
+    RSSITFAM == "Couple" & RSENAUTC > 0 ~ "Couple avec enfant",
+    RSSITFAM == "Sans signification ou inconnue" ~ "Situation inconnue"
+    )) %>%  
+  group_by(DTREFFRE, typefam) %>% 
+  summarise(BRSAfam_menage = n_distinct(id_menage)) %>%
+  collect() %>% 
+  arrange(DTREFFRE, typefam)
+```
+
+### Nombre de foyers bénéficiaires du RSA sans et avec majoration pour isolement selon le type de famille
+
+
+```{r}
+#Nombre de foyers allocataires du RSA
+nbBRSAtypefam <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  #filter(year((DTREFFRE))==2020 & month(DTREFFRE)==12 ) %>% #R confond le mois et le jour
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") ) %>% 
+  mutate(RSAtype = case_when(
+    RSAVERS == "RSA jeune" ~ "RSA jeune", 
+    RSAMAJI == "Droit versable" ~ "RSA majoré",
+    RSAMAJI == "Droit suspendu" ~ "RSA non majoré", 
+    RSAMAJI == "Non concerné" ~ "RSA non majoré"
+  )) %>% 
+  mutate(typefam = case_when(
+    RSSITFAM == "Isolé homme" & RSENAUTC == 0 ~ "Homme sans enfant",
+    RSSITFAM == "Isolé femme" & RSENAUTC == 0 ~ "Femme sans enfant",
+    RSSITFAM == "Couple" & RSENAUTC == 0 ~ "Couple sans enfant", 
+    RSSITFAM == "Isolé homme" & RSENAUTC > 0 ~ "Homme avec enfant",
+    RSSITFAM == "Isolé femme" & RSENAUTC > 0 ~ "Femme avec enfant",
+    RSSITFAM == "Couple" & RSENAUTC > 0 ~ "Couple avec enfant",
+    RSSITFAM == "Sans signification ou inconnue" ~ "Situation inconnue"
+    )) %>%  
+  group_by(DTREFFRE, RSAtype, typefam) %>% 
+  summarise(BRSAtypefam_menage = n_distinct(id_menage)) %>%
+  collect() %>% 
+  arrange(DTREFFRE, typefam, RSAtype)
+
+#Montant des dépenses RSA
+CoutBRSAtypefam <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") ) %>% 
+  mutate(RSAtype = case_when(
+    RSAVERS == "RSA jeune" ~ "RSA jeune", 
+    RSAMAJI == "Droit versable" ~ "RSA majoré",
+    RSAMAJI == "Droit suspendu" ~ "RSA non majoré", 
+    RSAMAJI == "Non concerné" ~ "RSA non majoré"
+  )) %>%
+  mutate(typefam = case_when(
+    RSSITFAM == "Isolé homme" & RSENAUTC == 0 ~ "Homme sans enfant",
+    RSSITFAM == "Isolé femme" & RSENAUTC == 0 ~ "Femme sans enfant",
+    RSSITFAM == "Couple" & RSENAUTC == 0 ~ "Couple sans enfant", 
+    RSSITFAM == "Isolé homme" & RSENAUTC > 0 ~ "Homme avec enfant",
+    RSSITFAM == "Isolé femme" & RSENAUTC > 0 ~ "Femme avec enfant",
+    RSSITFAM == "Couple" & RSENAUTC > 0 ~ "Couple avec enfant",
+    RSSITFAM == "Sans signification ou inconnue" ~ "Situation inconnue"
+    )) %>% 
+  select(DTREFFRE, id_menage, MTRSAVER, RSAtype, typefam) %>% 
+  collect() %>% 
+  distinct(id_menage, DTREFFRE, .keep_all = TRUE) %>% 
+  group_by(DTREFFRE, typefam, RSAtype) %>% 
+  summarise(BRSA_cout = sum(MTRSAVER)) %>%
+  collect() %>% 
+  arrange(DTREFFRE, typefam, RSAtype)
+```
+
+### Nombre de foyers bénéficiaires du RSA et cumul avec d'autres prestations
+
+```{r}
+#base ménage des prestations
+menAllocs <- tables_parquet_cnaf_menage %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>%
+  mutate(APL = case_when(
+    APLVERS == 1 ~ 1,
+    APLVERS != 1 | is.na(APLVERS) ~ 0
+  )) %>%
+  mutate(ALS = case_when(
+    ALSVERS == 1 ~ 1,
+    ALSVERS != 1 | is.na(ALSVERS) ~ 0
+  )) %>%
+  mutate(ALF = case_when(
+    ALFVERS == 1 ~ 1,
+    ALFVERS != 1 | is.na(ALFVERS) ~ 0
+  )) %>%
+  mutate(AF = case_when(
+    MTAFVERS > 0 ~ 1,
+    MTAFVERS ==0 | is.na(MTAFVERS) ~ 0
+  )) %>%
+  mutate(CF = case_when(
+    MTCFVERS > 0 ~ 1,
+    MTCFVERS ==0 | is.na(MTCFVERS) ~ 0
+  )) %>%
+  mutate(PAJE = case_when(
+    PAJEVERS == 1 ~ 1,
+    PAJEVERS != 1 | is.na(PAJEVERS) ~ 0
+  )) %>%
+  select(DTREFFRE, id_menage, APL, ALS, ALF, AF, CF, PAJE) %>% 
+filter(!is.na(APL) & !is.na(ALS) & !is.na(ALF) & !is.na(AF) & !is.na(CF) & !is.na(PAJE)) 
+
+#BRSA et APL
+nbBRSA_alloc <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental")) %>% 
+  mutate(RSA = 1) %>% 
+  mutate(AAH = case_when(
+    AAHVERS != "Pas d'allocation handicapé adulte" ~ 1,
+    AAHVERS == "Pas d'allocation handicapé adulte" ~ 0
+  )) %>%
+  mutate(PPA = case_when(
+    PPAVERS != "Pas de Prime d'Activité" ~ 1,
+    PPAVERS == "Pas de Prime d'Activité" ~ 0
+  )) %>%
+  select(id_menage, DTREFFRE, RSA, AAH, PPA) %>%  
+  left_join(menAllocs, by=c("DTREFFRE", "id_menage")) %>% 
+  collect() %>% 
+  mutate(APL = replace_na(APL, 0)) %>%
+  mutate(ALS = replace_na(ALS, 0)) %>%
+  mutate(ALF = replace_na(ALF, 0)) %>%
+  mutate(AF = replace_na(AF, 0)) %>%
+  mutate(CF = replace_na(CF, 0)) %>%
+  mutate(PAJE = replace_na(PAJE, 0)) %>%
+  mutate(RSA_slt = case_when(
+    APL+ALS+ALF+AF+CF+PAJE+PPA+AAH == 0 ~ 1,
+    APL+ALS+ALF+AF+CF+PAJE+PPA+AAH > 0 ~ 0
+  )) %>%
+  collect() %>% 
+  distinct(DTREFFRE, id_menage, .keep_all = TRUE) %>% 
+    group_by(DTREFFRE) %>% 
+  summarise(BRSAAPL = sum(APL, na.rm = TRUE), 
+            BRSAALS = sum(ALS, na.rm = TRUE),
+            BRSAALF = sum(ALF, na.rm = TRUE),
+            BRSAAF = sum(AF, na.rm = TRUE),
+            BRSACF = sum(CF, na.rm = TRUE),
+            BRSAPAJE = sum(PAJE, na.rm = TRUE),
+            BRSAPPA = sum(PPA, na.rm = TRUE),
+            BRSAAAH = sum(AAH, na.rm = TRUE),
+            BRSAslt = sum(RSA_slt, na.rm = TRUE)) %>%
+  collect() %>% 
+  arrange(DTREFFRE)
+
+
+
+
+```
+
+### Âge du responsable de dossier des foyers allocataires du RSA
+
+
+
+```{r}
+#création de la base ménage avec l'âge
+menAge <- tables_parquet_cnaf_menage %>% 
+  select(DTREFFRE, NORDALLC, NUMCAF, SEXE, DTNAIRES) %>%
+  # filter(!is.na(SEXE)) %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>%
+  mutate(DTNAIRES = as.Date(DTNAIRES)) %>%
+  mutate(AGE = ((DTREFFRE-DTNAIRES))) %>% 
+  collect() %>% 
+  mutate(Age_t = case_when(
+    AGE/31557600 < 25 ~ "moins de 25 ans", #on divise du nombre de seconde par an
+    25 <= AGE/31557600 & AGE/31557600 < 30 ~ "De 25 à 29 ans",
+    30 <= AGE/31557600 & AGE/31557600 < 40 ~ "De 30 à 39 ans",
+    40 <= AGE/31557600 & AGE/31557600 < 50 ~ "De 40 à 49 ans",
+    50 <= AGE/31557600 & AGE/31557600 < 55 ~ "De 50 à 54 ans",
+    55 <= AGE/31557600 & AGE/31557600 < 60 ~ "De 55 à 59 ans",
+    60 <= AGE/31557600 & AGE/31557600 < 65 ~ "De 60 à 64 ans",
+    AGE/31557600 >= 65 ~ "65 ans ou plus"
+  )) %>% 
+  collect() 
+
+
+
+Age_RSA <- tables_parquet_cnaf_indiv %>%
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental")) %>%
+  select(DTREFFRE, NORDALLC, NUMCAF) %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  collect() %>% 
+  left_join(menAge, by=c("DTREFFRE", "NUMCAF", "NORDALLC")) %>% 
+  mutate(id_menage = paste0(NORDALLC, NUMCAF)) %>%
+  select(DTREFFRE, id_menage, SEXE, Age_t) %>% 
+  # filter(!is.na(SEXE)) %>% 
+  group_by(DTREFFRE, Age_t) %>% 
+  summarise(somme_age = n_distinct(id_menage)) %>%
+  # summarise(somme_age = n()) %>%
+  collect() %>% 
+  arrange(DTREFFRE, Age_t)
+
+test<- menAge %>% 
+  slice_head(n=100) %>% 
+  mutate(naissance_mois = month(DTNAIRES),
+         date_mois = month(DTREFFRE))
+
+
+test <- Age_RSA %>% 
+  group_by(DTREFFRE) %>% 
+  summarise(sum(somme_age)) %>% 
+  collect()
+
+```
+
+
+
+
+### Taux d'entrée et de sortie du RSA
+
+Le taux d'entrée se calcule comme la part des bénéficiaires en décembre d'une année, qui n'étaient pas bénéficiaires en décembre de l'année précédente.
+Le taux de sortie se calcule comme la part des bénéficiaires en décembre d'une année, qui ne sont plus bénéficiaires en décembre de l'année suivante.
+
+
+
+```{r}
+#par ménage
+#taux d'entrée
+entreeRSA <-  tables_parquet_cnaf_indiv %>%  
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") & year(DTREFFRE)==2020 & month(DTREFFRE)==12) #R confond le mois et le jour
+
+nbentreeRSA <-  entreeRSA %>% 
+  summarise(RSA2020 = n_distinct(id_menage)) %>%
+  collect()
+
+entreeRSA2020 <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") & year(DTREFFRE)==2019 & month(DTREFFRE)==12) %>% #R confond le mois et le jour
+  right_join(entreeRSA, by =c("id_menage")) %>% 
+  summarise(RSA2020_2019 = n_distinct(id_menage)) %>%
+  collect() %>% 
+  cbind(nbentreeRSA) %>% 
+  mutate(p=1-(RSA2020_2019/RSA2020)) %>% 
+  collect()
+
+#taux de sortie
+sortieRSA <-  tables_parquet_cnaf_indiv %>%  
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>%
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") & year(DTREFFRE)==2019 & month(DTREFFRE)==12) 
+
+RSA2019 <-  sortieRSA %>% 
+  summarise(RSA2020 = n_distinct(id_menage)) %>%
+  collect()
+
+sortieRSA2020 <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>%
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") & year(DTREFFRE)==2020 & month(DTREFFRE)==12) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  right_join(sortieRSA, by =c("id_menage")) %>% 
+  summarise(RSA2020_2019 = n_distinct(id_menage)) %>%
+  collect() %>% 
+  cbind(RSA2019) %>% 
+  mutate(p=1-(RSA2020_2019/RSA2019)) %>% 
+  collect()
+
+
+
+
+
+#par individu
+#taux d'entrée
+entreeRSA <-  tables_parquet_cnaf_indiv %>%  
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") & year(DTREFFRE)==2020 & month(DTREFFRE)==12)
+
+nbentreeRSA <-  entreeRSA %>% 
+  summarise(RSA2020 = n_distinct(id_midas)) %>%
+  collect()
+
+entreeRSA2020 <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") & year(DTREFFRE)==2019 & month(DTREFFRE)==12) %>% 
+  right_join(entreeRSA, by =c("id_midas")) %>% 
+  summarise(RSA2020_2019 = n_distinct(id_midas)) %>%
+  collect() %>% 
+  cbind(nbentreeRSA) %>% 
+  mutate(p=1-(RSA2020_2019/RSA2020)) %>% 
+  collect()
+
+#taux de sortie
+sortieRSA <-  tables_parquet_cnaf_indiv %>%  
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>%
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") & year(DTREFFRE)==2019 & month(DTREFFRE)==12) 
+
+RSA2019 <-  sortieRSA %>% 
+  summarise(RSA2020 = n_distinct(id_midas)) %>%
+  collect()
+
+sortieRSA2020 <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>%
+  filter((RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") & year(DTREFFRE)==2020 & month(DTREFFRE)==12) %>% 
+  right_join(sortieRSA, by =c("id_midas")) %>% 
+  summarise(RSA2020_2019 = n_distinct(id_midas)) %>%
+  collect() %>% 
+  cbind(RSA2019) %>% 
+  mutate(p=1-(RSA2020_2019/RSA2019)) %>% 
+  collect()
+
+```
+

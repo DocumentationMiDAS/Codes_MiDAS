@@ -1,0 +1,1488 @@
+---
+title: "Cibles_FNA_clean"
+format: html
+editor: visual
+---
+
+```{r}
+#| eval : false
+#| warning : false
+
+###Vider l'environnement de la session avant de commencer
+rm(list=ls())
+
+###Packages nécessaires
+library(dplyr)
+library(arrow)
+library(haven)
+library(lubridate)
+library(reshape2)
+library(duckdb)
+library(dbplyr)
+```
+
+## Conversion des données en parquet
+
+Le programme suivant permet de récupérer une table exhaustive de Midas dans le fichier dont le chemin doit être renseigné path_sas, de l'importer en session R et de l'exporter en parquet vers le dossier dont le chemin doit être renseigné dans path_parquet.
+
+```{r}
+#| eval : false
+#chemins vague 1 sas
+path_sas <-  ""
+
+#chemins vague 1 parquet
+path_parquet <- ""
+```
+
+```{r}
+#| eval : false
+ODD <- read_sas(paste0(path_sas, "ln1s.sas7bdat"))
+write_parquet(ODD, paste0(path_parquet, "odd.parquet"))
+rm(ODD)
+```
+
+## Chargement des tables
+
+Pour l'import, il est préférable de spécifier un schéma de données, c'est-à-dire indiquer le type de chaque variable que l'on souhaite charger. Le lien avec les fichiers parquet se fera ainsi instantannément car il ne sera pas nécessaire d'inférer le type de chaque variable.
+
+Si les tables ont déjà été converties et exportées en parquet, le programme ci-dessous permet simplement de charger les tables parquet au début d'une session de travail :
+
+```{r}
+#| eval : false
+#chemins vague 1
+path_parquet_FNA <- "C:/Users/Public/Documents/MiDAS_parquet/Vague 1/FNA/"
+path_parquet_FHS <- "C:/Users/Public/Documents/MiDAS_parquet/Vague 1/FHS/"
+```
+
+```{r}
+#| eval : false
+
+###Liste des noms des tables à charger
+nom_FNA <-list("PJC", "DAL", "ODD", 
+          "CDT", "PAR" ) #liste des tables FNA à charger
+nom_FHS <- list("DE", "D2", "E0")#liste des tables FHS à charger
+
+###Chemins des tables à charger
+nom_parquet_FNA <- paste0(path_parquet_FNA, nom_FNA, ".parquet") #définition des noms des tables FNA avec leur emplacement pour le chargement
+nom_parquet_FHS <- paste0(path_parquet_FHS, nom_FHS, ".parquet") #définition des noms des tables FNA avec leur emplacement pour le chargement
+
+###Nom d'import en session
+nom_import_FNA <-list("PJC_p", "DAL_p", "ODD_p", 
+          "CDT_p", "PAR_p") #nom que l'on veut donner aux tables FNA chargées dans R
+nom_import_FHS <-list( "DE_p", "D2_p", "E0_p") #nom que l'on veut donner aux tables FHS chargées dans R
+
+###schémas de données tables FNA
+schema_PJC <- schema("id_midas"= string(), "KROD3" = string(), "PJC_DEB"= string(), "PJC_FIN"=string(), "KCPJC"=double(), "KCALF"=string(), "KQRSPP"=double(), "KNOPRP"=double(), "KTDGAP"=double(), "KQBPJP"=double(), "KCFPP" = string())
+schema_ODD <- schema("id_midas"= string(), "KROD" = string(),"KCAAJ"=string(), "KCRD"=double(), "KQCSJP"=double(), "KPJDXP"=double(), "KCRRD"=string(), "KDJRSJ"=date32(), "KDPOD"=date32(), "KCRGC" = string())
+schema_DAL <- schema("id_midas" = string(), "KCDA"=string(), "KROD1"=string(), "KCNDDA"=string())
+schema_CDT <- schema("id_midas" = string(), "KCDA1"=string(),"KCMCA"=string(), "KCMET"=string(), "KDDPE"=date32(), "KDFPE"=date32(), "KCEP2" = string() )
+schema_PAR <- schema("id_midas" = string(), "KDMAP" = double(), "KDAASP" = double())
+
+
+schema_FNA <- c(schema_PJC, schema_DAL,schema_ODD,  schema_CDT, schema_PAR)
+
+###Définition des schémas de données des tables FHS
+schema_DE <- schema("id_midas" = string(), "datnais" = date32(), "SEXE"= double(), "DATINS" = date32(), "DATANN"= date32(), "DEPCOM" = string(), "CATREGR"=string())
+schema_D2 <- schema("id_midas" = string(), "indem" = string(), "jourdv" = date32(), "jourfv" = date32())
+schema_E0 <- schema("id_midas" = string(), "MOIS" = string())
+schema_FHS<- c(schema_DE, schema_D2, schema_E0)
+
+###chargement des tables FNA
+for (i in 1 : length(nom_import_FNA)){
+  assign(nom_import_FNA[[i]], 
+         open_dataset(nom_parquet_FNA[i],schema = schema_FNA[[i]])
+  ); gc()
+}
+
+###chargement des tables FHS
+for (i in 1 : length(nom_import_FHS)){
+  assign(nom_import_FHS[[i]], 
+         open_dataset(nom_parquet_FHS[i],schema = schema_FHS[[i]])
+  ); gc()
+}
+
+
+rm(nom_FNA)
+rm(nom_import_FNA)
+rm(nom_parquet_FNA)
+rm(i)
+rm(nom_FHS)
+rm(nom_import_FHS)
+rm(nom_parquet_FHS)
+rm(path_parquet_FHS)
+rm(schema_CDT, schema_DAL, schema_DE, schema_ODD, schema_PJC, path_parquet_FNA, schema_FHS, schema_FNA, schema_D2, schema_E0, schema_PAR)
+```
+
+## Introduction
+
+Le document présent permet de construire des indicateurs cibles à partir du Fichier National des allocataires (FNA) compris dans l'appariement Midas, en comparant les résultats obtenus aux cibles publiées par Pôle Emploi et l'UNEDIC à une certaine date. Le choix de la date se fait dans la cellule suivante permettant de créer la variable **date_Date**.
+
+```{r}
+#| eval : false
+
+date_Date <- as.Date("2021-12-31") #à modifier si on souhaite les données d'un autre mois
+
+```
+
+*Utilisation du FHS :* le programme utilise parfois des tables du FHS pour reconstruire certains indicateurs se rapportant au FNA, par exemple la part des indemnisés (qui se calcule à partir du FNA) en catégorie A, B ou C (qui ne peut être identifiée qu'à partir du FHS).
+
+*Champ Pôle Emploi :* Les indicateurs reproduits ici correspondent à la mesure adoptée par Pôle Emploi du nombre de personnes au dernier jours du mois.
+
+### Allocations et régime d'indemnisation
+
+Dans les données du FNA, il est possible de repérer le code allocation des personnes indemnisables, donné par les variables **KCAAJ** pour le code allocation à l'ouverture de droit dans la table ODD, et **KCALF** pour le code allocation correspondant à chaque période à justification constante (PJC, période sur laquelle le montant versé est constant), dans la table PJC. Ces variables sont détaillées, elles indiquent par exemple l'année de la convention d'assurance chômage correspondant à l'allocation (exemple : ARE 2017). Les programmes de cette section permettent de créer des variables agrégées à partir des codes allocation.
+
+Ces variables sont également construites pour la table D2 du FHS, dans laquelle le code allocation est donné par **indem**.
+
+Le programme ci-dessous permet de créer la variable **alloc** qui renseigne le type d'allocation (ARE, AREF, ASS...).
+
+Les indicateurs publiés par Pôle Emploi, la Dares et l'UNEDIC, dont la méthodologie est détaillée dans [Note méthodologique](https://www.pole-emploi.org/files/live/sites/peorg/files/documents/Statistiques-et-analyses/_Documentation/taux_de_couverture_doc_methodo.pdf) sont déclinés par régime d'indemnisation : Assurance, Etat, Autres. Pour reconstituer ces indicateurs, chaque allocation de **alloc** est associée au régime correspondant selon la méthodologie décrite dans la note mentionnée, pour créer la variable **regime**. Le régime d'indemnisation correspondant à chaque allocation est également disponible dans les publications du nombre d'allocataires indemnisés de Pôle Emploi [Nombre d'allocataires indemnisés](https://statistiques.pole-emploi.org/indem/indempub/215999) dans l'onglet Allocation du Excel contenant les séries.
+
+```{r}
+#| eval : false
+
+
+###Pour ODD
+ODD_p <- ODD_p %>% mutate(alloc = case_when(KCAAJ == "" ~ "Manquant",
+                                           KCAAJ %in% c("47", "54", "64", "82","AC", "BB", "BK", "BP", "CJ", "CN", "CQ", "CT","DM", "DT", "EF", "EN", "EW", "FL", "FM")~ "ARE",
+                                           KCAAJ =="45" ~ "ACCREASS",
+                                           KCAAJ %in% c("48", "55", "65", "83", "AD", "BC", "BN", "BQ", "CK", "CO", "CR", "CU", "DQ", "DU", "EL", "EO", "EX", "FO", "FP")~ "AREF",
+                                           KCAAJ %in% c("AE", "BH", "BM", "CL", "DO", "EI", "EK", "EY")~ "ARECG",
+                                           KCAAJ %in% c("BI", "BO", "CM", "AF", "DR", "EM", "EZ")~ "AREFCG",
+                                           KCAAJ %in% c("FH", "ER", "EQ")~ "RFFle2020",
+                                           KCAAJ %in% c("AY", "CX", "DZ", "99", "BG", "BJ", "BR", "CI", "EE")~ "RFFge2020",
+                                           KCAAJ %in% c("AM", "AN", "AO","AP","AQ","AR","BU","BV","BW","BY","BZ","CA","CB","CC","CD","CE","CF","CG")~ "ASP",
+                                           KCAAJ %in% c("AK","AL")~ "ASP-ARE",
+                                           KCAAJ %in% c("68","87","AH","AJ","AZ","BA","CP","DS","ED","EH","EK")~"ARCE",
+                                           KCAAJ %in% c("EA")~ "ATI",
+                                           KCAAJ %in% c("EB")~ "ATIF",
+                                           KCAAJ %in% c("EC")~ "ADM",
+                                           KCAAJ %in% c("EP")~ "ADMF",
+                                           KCAAJ %in% c("25", "44","56","BD")~ "ASS",
+                                           KCAAJ %in% c("51")~ "ASSF",
+                                           KCAAJ %in% c("AT","AV","BE","BF","BS","BT")~ "ATS",
+                                           KCAAJ %in% c("61", "84")~ "ASR",
+                                           KCAAJ %in% c("62", "85")~ "ASR-ARE",
+                                           KCAAJ %in% c("FG")~ "ACEJ",
+                                           KCAAJ %in% c("DW", "DV", "75", "77", "71")~ "AFSP",
+                                           KCAAJ %in% c("DX", "DY", "72","76", "78")~ "AFSPF",
+                                           KCAAJ %in% c("70", "91", "69", "88")~ "ATP",
+                                           KCAAJ %in% c("96")~ "AEPE",
+                                           KCAAJ %in% c("92", "95")~ "AFDEF",
+                                           KCAAJ %in% c("52", "53", "93", "94", "97", "98")~ "AER",
+                                           KCAAJ %in% c("73", "74")~ "ATA", 
+                                           KCAAJ %in% c("81") ~ "RFPE", 
+                                           KCAAJ %in% c("40")~  "AUD",
+                                           KCAAJ %in% c("43")~ "ACA",
+                                           KCAAJ %in% c("04")~ "AF", 
+                                           KCAAJ %in% c("39")~ "RSP", 
+                                           KCAAJ %in% c("49", "50") ~ "AFF",
+                                           KCAAJ %in% c("10", "11", "15", "16", "17", "18", "26","42", "OC", "OE")~ "Préretraite",
+                                           KCAAJ %in% c("FT", "FV", "FX") ~"Nouveau",
+                                           TRUE ~ "Autres")) %>% 
+  mutate(regime = case_when(alloc %in% c("ARE", "AUD", "ACA", "ATI", "ADM","AREF", "ATIF", "ADMF", "ASP", "ASP-ARE","ASR", "ASR-ARE", "ATP")~ "AC",
+                            alloc %in% c("ASS", "ATA","AER", "ATS", "AFSP", "AF", "AEPE", "RFFle2020", "ASSF", "RSP", "AFDEF", "AFF", "AFSPF")~ "Etat",
+                            alloc %in% c("ARECG", "AREFCG", "RFPE", "RFFge2020")~ "Autres",
+                            alloc == "Préretraite" ~"Préretraite",
+                            TRUE ~ "Inconnu"))
+
+
+
+
+###Pour PJC
+
+PJC_p <- PJC_p %>% 
+  mutate(alloc = case_when(KCALF == "" ~ "Manquant", 
+                           KCALF %in% c("47", "54", "64", "82","AC", "BB", "BK", "BP", "CJ", "CN", "CQ", "CT","DM", "DT", "EF", "EN", "EW", "FL", "FM")~ "ARE",
+                           KCALF =="45" ~ "ACCREASS",
+                           KCALF %in% c("48", "55", "65", "83", "AD", "BC", "BN", "BQ", "CK", "CO", "CR", "CU", "DQ", "DU", "EL", "EO", "EX", "FO", "FP")~ "AREF",
+                           KCALF %in% c("AE", "BH", "BM", "CL", "DO", "EI", "EK", "EY")~ "ARECG",
+                           KCALF %in% c("BI", "BO", "CM", "AF", "DR", "EM", "EZ")~ "AREFCG",
+                           KCALF %in% c("FH", "ER", "EQ")~ "RFFle2020",
+                           KCALF %in% c("AY", "CX", "DZ", "99", "BG", "BJ", "BR", "CI", "EE")~ "RFFge2020",
+                           KCALF %in% c("AM", "AN", "AO","AP","AQ","AR","BU","BV","BW","BY","BZ","CA","CB","CC","CD","CE","CF","CG")~ "ASP",
+                           KCALF %in% c("AK","AL")~ "ASP-ARE",
+                           KCALF %in% c("68","87","AH","AJ","AZ","BA","CP","DS","ED","EH","EK")~"ARCE",
+                           KCALF %in% c("EA")~ "ATI",
+                           KCALF %in% c("EB")~ "ATIF",
+                           KCALF %in% c("EC")~ "ADM",
+                           KCALF %in% c("EP")~ "ADMF",
+                           KCALF %in% c("25", "44","56","BD")~ "ASS",
+                           KCALF %in% c("51")~ "ASSF",
+                           KCALF %in% c("AT","AV","BE","BF","BS","BT")~ "ATS",
+                           KCALF %in% c("61", "84")~ "ASR",
+                           KCALF %in% c("62", "85")~ "ASR-ARE",
+                           KCALF %in% c("FG")~ "ACEJ",
+                           KCALF %in% c("DW", "DV", "75", "77", "71")~ "AFSP",
+                           KCALF %in% c("DX", "DY", "72","76", "78")~ "AFSPF",
+                           KCALF %in% c("70", "91", "69", "88")~ "ATP",
+                           KCALF %in% c("96")~ "AEPE",
+                           KCALF %in% c("92", "95")~ "AFDEF",
+                           KCALF %in% c("52", "53", "93", "94", "97", "98")~ "AER",
+                           KCALF %in% c("73", "74")~ "ATA", 
+                           KCALF %in% c("81") ~ "RFPE", 
+                           KCALF %in% c("40")~  "AUD",
+                           KCALF %in% c("43")~ "ACA",
+                           KCALF %in% c("04")~ "AF", 
+                           KCALF %in% c("39")~ "RSP", 
+                           KCALF %in% c("49", "50") ~ "AFF",
+                           KCALF %in% c("10", "11", "15", "16", "17", "18", "26","42", "OC", "OE")~ "Préretraite",
+                           KCALF %in% c("FT", "FV", "FX") ~"Nouveau_pas_de_doc",
+                           TRUE ~ "Autres")) %>% 
+  mutate(regime = case_when(alloc %in% c("ARE", "AUD", "ACA", "ATI", "ADM","AREF", "ATIF", "ADMF", "ASP", "ASP-ARE","ASR", "ASR-ARE", "ATP")~ "AC",
+                            alloc %in% c("ASS", "ATA","AER", "ATS", "AFSP", "AF", "AEPE", "RFFle2020", "ASSF", "RSP", "AFDEF", "AFF", "AFSPF")~ "Etat",
+                            alloc %in% c("ARECG", "AREFCG", "RFPE", "RFFge2020")~ "Autres",
+                            alloc == "Préretraite" ~"Préretraite",
+                            TRUE ~ "Inconnu"))
+
+###Pour D2
+
+D2_p<- D2_p %>% mutate(alloc = case_when(indem == "" ~ "Manquant", 
+                                                 indem %in% c("47", "54", "64", "82","AC", "BB", "BK", "BP", "CJ", "CN", "CQ", "CT","DM", "DT", "EF", "EN", "EW", "FL", "FM")~ "ARE",
+                                                 indem =="45" ~ "ACCREASS",
+                                                 indem %in% c("48", "55", "65", "83", "AD", "BC", "BN", "BQ", "CK", "CO", "CR", "CU", "DQ", "DU", "EL", "EO", "EX", "FO", "FP")~ "AREF",
+                                                 indem %in% c("AE", "BH", "BM", "CL", "DO", "EI", "EK", "EY", "FN")~ "ARECG",
+                                                 indem %in% c("BI", "BO", "CM", "AF", "DR", "EM", "EZ", "FQ")~ "AREFCG",
+                                                 indem %in% c("FH", "ER", "EQ")~ "RFFle2020",
+                                                 indem %in% c("AY", "CX", "DZ", "99", "BG", "BJ", "BR", "CI", "EE")~ "RFFge2020",
+                                                 indem %in% c("AM", "AN", "AO","AP","AQ","AR","BU","BV","BW","BY","BZ","CA","CB","CC","CD","CE","CF","CG", "FR", "FS","FT","FU", "FV", 
+                                                              "FX", "GC","GD", "GE", "GF", "GG", "GH")~ "ASP",
+                                                 indem %in% c("AK","AL", "GK", "GL")~ "ASP-ARE",
+                                                 indem %in% c("68","87","AH","AJ","AZ","BA","CP","DS","ED","EH","EK")~"ARCE",
+                                                 indem %in% c("EA", "GI")~ "ATI",
+                                                 indem %in% c("EB", "GJ")~ "ATIF",
+                                                 indem %in% c("EC")~ "ADM",
+                                                 indem %in% c("EP")~ "ADMF",
+                                                 indem %in% c("25", "44","56","BD")~ "ASS",
+                                                 indem %in% c("51")~ "ASSF",
+                                                 indem %in% c("AT","AV","BE","BF","BS","BT")~ "ATS",
+                                                 indem %in% c("61", "84")~ "ASR",
+                                                 indem %in% c("62", "85")~ "ASR-ARE",
+                                                 indem %in% c("FG")~ "ACEJ",
+                                                 indem %in% c("DW", "DV", "75", "77", "71")~ "AFSP",
+                                                 indem %in% c("DX", "DY", "72","76", "78")~ "AFSPF",
+                                                 indem %in% c("70", "91", "69", "88")~ "ATP",
+                                                 indem %in% c("96")~ "AEPE",
+                                                 indem %in% c("92", "95")~ "AFDEF",
+                                                 indem %in% c("52", "53", "93", "94", "97", "98")~ "AER",
+                                                 indem %in% c("73", "74")~ "ATA", 
+                                                 indem %in% c("81") ~ "RFPE", 
+                                                 indem %in% c("40")~  "AUD",
+                                                 indem %in% c("43")~ "ACA",
+                                                 indem %in% c("04")~ "AF", 
+                                                 indem %in% c("39")~ "RSP", 
+                                                 indem %in% c("49", "50") ~ "AFF",
+                                                 indem %in% c("10", "11", "15", "16", "17", "18", "26","42", "OC", "OE")~ "Préretraite",
+                                                 indem %in% c("FT", "FV", "FX") ~"Nouveau",
+                                                 TRUE ~ "Autres")) %>% 
+  mutate(regime = case_when(alloc %in% c("ARE", "AUD", "ACA", "ATI", "ADM","AREF", "ATIF", "ADMF", "ASP", "ASP-ARE","ASR", "ASR-ARE", "ATP")~ "AC",
+                            alloc %in% c("ASS", "ATA","AER", "ATS", "AFSP", "AF", "AEPE", "RFFle2020", "ASSF", "RSP", "AFDEF", "AFF", "AFSPF")~ "Etat",
+                            alloc %in% c("ARECG", "AREFCG", "RFPE", "RFFge2020")~ "Autres",
+                            alloc == "Préretraite" ~"Préretraite",
+                            TRUE ~ "Inconnu"))
+
+
+```
+
+**N.B. :** pour repérer tous les allocataires de l'ARE ou de l'AREF, il faut prendre les codes alloc ARE, AREF, ARECG et AREFCG qui correpondent aux conventions de gestion mais qui sont indemnisés dans les mêmes conditions que ARE et AREF.
+
+### Motifs rupture de contrat
+
+Le programme suivant permet de créer la variable **passe_pro** à partir de la variable **KCMCA** de la table CDT, regroupant les modalités de cette dernière pour produire des statistiques à partir des quatre types agrégés de fin de contrat : licenciement, fin de contrat (CDD, mission, CDD intermittent, apprentissage), départ volontaire et rupture d'un commun accord.
+
+*Remarque :* Ces regroupements peuvent ne pas correspondre aux regroupements effectués par l'UNEDIC dans leurs publications.
+
+```{r}
+#| eval : false
+
+
+CDT_p <- CDT_p %>%
+  to_duckdb()%>% 
+  mutate(KCMCA_num = case_when(KCMCA =="XX" ~ 0,
+                               KCMCA ==""~1,
+                               is.na(KCMCA)~ 1,
+                               TRUE ~ as.numeric(KCMCA))) %>% 
+  mutate(passe_pro = case_when(((KCMCA_num >1 & KCMCA_num <23)|(KCMCA_num >27 & KCMCA_num <30)|
+                                  KCMCA_num == 25|KCMCA_num == 38|KCMCA_num == 50|KCMCA_num == 57|
+                                  KCMCA_num == 91|KCMCA_num == 95|KCMCA_num == 80 |KCMCA_num == 85) ~ "Licenciement",
+                               ((KCMCA_num > 29 & KCMCA_num < 38)|(KCMCA_num > 38 & KCMCA_num < 50)|
+                                  (KCMCA_num > 50 & KCMCA_num < 55)| 
+                                  KCMCA_num == 58| KCMCA_num == 81| KCMCA_num == 82| 
+                                  KCMCA_num == 83|KCMCA_num == 86) ~ "Fin_contrat",
+                               ( (KCMCA_num > 59 & KCMCA_num < 80)|(KCMCA_num > 99 & KCMCA_num < 176)| 
+                                   KCMCA_num == 87| KCMCA_num == 45| KCMCA_num == 24)~ "Depart_volontaire",
+                               (KCMCA_num == 88 |KCMCA_num ==92|KCMCA_num ==93|KCMCA_num ==94|
+                                  KCMCA_num ==84|KCMCA_num ==23|KCMCA_num ==26|KCMCA_num ==27|
+                                  KCMCA_num ==46|KCMCA_num ==47|KCMCA_num ==48|KCMCA_num ==49) ~ "Rupture_accord",
+                               KCMCA_num==1~ "Manquant",
+                               TRUE ~ "Autres"))%>%
+  to_arrow()
+```
+
+*Remarque :* utilisation ici du package duckdb qui permet de réaliser des opérations avec un mode de fonctionnement proche du SQL, et notamment des opérations par groupes (window_functions) qui ne sont pas possibles pour l'instant avec le package arrow.
+
+### Recodage des dates de PJC
+
+Recodage des dates de la table PJC : les valeurs manquantes sont remplacées par une date aberrante car le format des valeurs d'une variable en parquet doit être homogène.
+
+```{r}
+#| eval : false
+###conversion en date
+
+PJC_p <- PJC_p%>%
+  mutate(KDDPJ = case_when(PJC_DEB ==""~as.Date("1900-01-01"),
+                           TRUE~as.Date(PJC_DEB, format = "%d/%m/%Y")),
+         KDFPJ = case_when(PJC_FIN ==""~as.Date("1900-01-01"),
+                           TRUE~as.Date(PJC_FIN, format = "%d/%m/%Y")))
+```
+
+## Nombre d'indemnisés
+
+### Nombre d'indemnisés toues contégories confondues (A, B, C, D, E) en fin d'un mois donné
+
+#### France entière
+
+Pour calculer le nombre d'indemnisés en fin d'un mois donné, on utilise la table PJC du FNA qui contient toutes les périodes à justification constante (période sur laquelle le montant d'allocation versé est constant) pour les droits du champ. Une PJC peut être payée (modalités 1 et 4 de la variable **KCPJC**), non payée mais comptée comme une consommation de droit (dans le cas de sanctions par exemple, modalité 2 de la variable **KCPJC**) et non payée non consommée (dans le cas d'un arrêt maladie par exemple, modalité 3 de la variable **KCPJC**). Le code ci-dessous permet de sélectionner les individus distincts (en regroupant par id_midas car un individu peut avoir plusieurs PJC) qui ont une PJC payée, c'est-à-dire les indemnisés, le mois donné. Pour sélectionner ces individus, on utilise les dates de début et de fin de PJC **KDDPJ** et **KDFPJ**.
+
+```{r}
+#| eval : false
+
+###France entière
+paye_tot <-  PJC_p %>% 
+  select(id_midas, KDDPJ, KDFPJ, KCPJC)%>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date & (KCPJC ==1 | KCPJC == 4))%>% 
+  collect() %>% 
+  distinct(id_midas)  #Le nombre de lignes de la table collectée correspond au nombre d'indemnisés.
+
+print(paste0("Le nombre d'indemnisés s'élève à environ ", as.character(nrow(paye_tot)), " le ", as.character(date_Date),"."))
+
+rm(paye_tot)
+```
+
+#### France métropolitaine
+
+L'indicateur est calculé comme suit pour la France métropolitaine :
+
+-   Appariement de la table PJC avec la table DE du FHS qui contient la variable **DEPCOM**, l'appariement est réalisé sur l'**id_midas** ;
+
+-   Un individu peut avoir plusieurs demandes d'emploi dans le FHS, sélection de la demande d'emploi correspondant au mois considéré (ouverte sur le dernier jour du mois), filtre sur **DATINS**, la date d'inscription et **DATANN** la date de fin de la demande d'emploi, on a ainsi récupéré la demande d'emploi correspondant au droit indemnisé ;
+
+*Remarque :* Lorsque la demande d'inscription est toujours en cours, la variable **DATANN** est nulle. Lorsqu'on applique un filter sur **DATANN** et que l'on souhaite conserver également les variables en cours, il faut bien ajouter la condition is.na(DATANN).
+
+-   Exclusion des DROM COM : code de la commune de résidence du demandeur d'emploi **DEPCOM** commençant par 97 ;
+
+-   Comptage des individus indemnisés en France métropolitaine en récupérant une liste d'**id_midas**.
+
+*Remarque :* Un demandeur d'emploi est rattaché à l'agence Pôle Emploi proche de sa commune de résidence.
+
+```{r}
+#| eval : false
+
+###France métropolitaine
+paye_tot <- PJC_p %>% 
+  select(id_midas, KDDPJ, KDFPJ, KCPJC) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date & (KCPJC ==1 | KCPJC == 4)) %>% 
+  distinct(id_midas) %>% 
+  collect()
+
+de_metro <- DE_p %>%
+  select(id_midas,DATINS, DATANN, DEPCOM) %>%
+  filter(DATINS <= date_Date & (DATANN >= date_Date|is.na(DATANN)) & !(substr(DEPCOM, 1,2) == "97")) %>%
+  collect()
+
+paye_metro  <- paye_tot %>%
+  left_join(de_metro, by = c("id_midas")) %>% 
+  filter(!(is.na(DATINS)))  %>% 
+  distinct(id_midas)
+
+print(paste0("En France métropolitaine, le nombre d'indemnisés s'élève à environ ", as.character(nrow(paye_metro)), " le ", as.character(date_Date), "."))
+
+rm(paye_tot)
+rm(paye_metro)
+rm(de_metro)
+```
+
+*Remarque :* lorsqu'on manipule le format parquet, il est possible de collecter la table avec l'instruction collect(), pour récupérer le résultat au format classique data.frame. Il est conseillé de ne collecter qu'un tableau filtré sur le fichier parquet et dont on n'a sélectionné que les colonnes nécessaires pour que le data.frame collecté soit le moins volumineux possible.
+
+## Nombre d'indemnisés toute catégorie confondue (A, B, C, D, E) en fin de mois, selon le régime d'indemnisation
+
+### Méthode 1 : à l'ouverture de droit
+
+#### France entière
+
+Pour distinguer les trois régimes d'indemnisation (assurance chômage, Etat, autres), on peut apparier les informations de la table PJC (les demandeurs d'emploi effectivement indemnisés) avec les informations sur le droit de la table ODD du FNA, l'appariement se fait en utilisant le couple identifiant **id_midas** et **KROD3** de la table PJC qui correspond à la variable **KROD** de la table ODD. La variable **KCRGC** de la table ODD donne le régime d'indemnisation de l'ouverture de droit.
+
+*Remarque :* l'instruction distinct permet de ne sélectionner qu'une occurence de chaque couple de valeurs de **id_midas, KROD3**, donc une seule occurence de chaque droit.
+
+```{r}
+#| eval : false
+###France entière
+paye_droit <-  PJC_p %>% 
+  select(id_midas, KROD3, KDDPJ, KDFPJ, KCPJC) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date & (KCPJC ==1 | KCPJC == 4)) %>% 
+  collect() %>%
+  distinct(id_midas, KROD3) %>% 
+  rename(KROD = KROD3) #ici le fichier est toujours en parquet car n'a pas été collecté.
+
+regime_odd <- ODD_p %>%
+  select(id_midas, KROD, KCRGC) %>%
+  collect()
+
+reg_paye <-  paye_droit %>% 
+  left_join(regime_odd, by = c("id_midas", "KROD")) %>% 
+  select(KCRGC) %>% 
+  group_by(KCRGC) %>% 
+  summarise(regime = n())  %>%
+  mutate(prop_regime = regime*100/sum(regime)) #le résultat collecté est un data.frame avec les modalités de KCRGC et les effectifs correspondants.
+
+reg_paye
+
+rm(paye_droit)
+rm(regime_odd)
+
+```
+
+#### France métropolitaine
+
+L'indicateur est calculé également pour la France métropolitaine, par la méthode suivante :
+
+-   Appariement de la table PJC avec la table ODD pour récupérer la variable **KCRGC** de la table ODD donne le régime d'indemnisation de l'ouverture de droit ;
+
+-   Appariement de la table obtenue avec la table DE du FHS qui contient la variable **DEPCOM**, l'appariement est réalisé sur l'**id_midas** ;
+
+-   Un individu peut avoir plusieurs demandes d'emploi dans le FHS, sélection de la demande d'emploi correspondant au mois considéré, filtre sur **DATINS**, la date d'inscription et **DATANN** la date de fin de la demande d'emploi, on a ainsi récupéré la demande d'emploi correspondant au droit indemnisé ;
+
+*Remarque :* Lorsque la demande d'inscription est toujours en cours, la variable **DATANN** est nulle. Lorsqu'on applique un filter sur **DATANN** et que l'on souhaite conserver également les variables en cours, il faut bien ajouter la condition is.na(DATANN).
+
+-   Exclusion des DROM COM : code département **DEPCOM** commençant par 97 ;
+
+-   Comptage des droits distincts indemnisés en France métropolitaine en récupérant une liste d'**id_midas**.
+
+```{r}
+#| eval : false
+###France métropolitaine
+paye_droit <-  PJC_p %>% 
+  select(id_midas, KROD3, KDDPJ, KDFPJ, KCPJC) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date & (KCPJC ==1 | KCPJC == 4)) %>% 
+  collect() %>%
+  distinct(id_midas, KROD3) %>% 
+  rename(KROD = KROD3) #ici le fichier est toujours en parquet car n'a pas été collecté.
+
+regime_odd <- ODD_p %>%
+  select(id_midas, KROD, KCRGC) %>%
+  collect()
+
+de_metro <- DE_p %>%
+  select(id_midas,DATINS, DATANN, DEPCOM) %>%
+  filter(DATINS <= date_Date & (DATANN >= date_Date|is.na(DATANN)) & !(substr(DEPCOM, 1,2) == "97")) %>%
+  collect()
+
+reg_paye_metro <- paye_droit %>%
+  left_join(de_metro, by = c("id_midas")) %>% 
+  filter(!(is.na(DATINS)))  %>%
+  distinct(id_midas, KROD)%>%
+  left_join(regime_odd, by = c("id_midas", "KROD")) %>% 
+  select(KCRGC) %>% 
+  group_by(KCRGC) %>% 
+  summarise(regime = n())  %>%
+  mutate(prop_regime = regime*100/sum(regime)) #le résultat collecté est un data.frame avec les modalités de KCRGC et les effectifs correspondants.
+
+reg_paye_metro
+
+rm(paye_droit)
+rm(regime_odd)
+rm(de_metro)
+
+```
+
+### Méthode 2 : au moment de l'indemnisation
+
+Il est également possible d'utiliser la variable **regime** indiquant le régime d'indemnisation construite directement à partir des codes allocation.
+
+#### France entière
+
+```{r}
+#| eval : false
+### France entière
+paye <- PJC_p %>% 
+  select(id_midas, KROD3,KDDPJ, KDFPJ, KCPJC, regime) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date & (KCPJC ==1 | KCPJC == 4)) %>% 
+  collect() %>%
+  group_by(id_midas) %>%
+  filter(KDDPJ == max(KDDPJ))  #pour chaque individu indemnisé au jour considéré on ne retient que la PJC ouverte le plus récemment
+
+paye_regimeFNA <- paye %>% 
+  group_by(regime) %>% 
+  summarise(par_regime = n()) %>% 
+  mutate(regime_freq = round(par_regime*100/sum(par_regime),1)) #effectifs et fréquences par régime
+
+paye_regimeFNA
+
+rm(paye)
+
+```
+
+#### France métropolitaine
+
+Pour calculer avec cette méthode sur le champ de la France métropolitaine :
+
+-   Appariement de la table des indemnisés avec la table DE qui contient la variable **DEPCOM**, l'appariement est réalisé sur l'**id_midas** ;
+
+-   Un individu peut avoir plusieurs demandes d'emploi dans le FHS, sélection de la demande d'emploi correspondant au mois considéré, filtre sur **DATINS**, la date d'inscription et **DATANN** la date de fin de la demande d'emploi, on a ainsi récupéré la demande d'emploi correspondant au droit indemnisé ;
+
+*Remarque :* Lorsque la demande d'inscription est toujours en cours, la variable **DATANN** est nulle. Lorsqu'on applique un filter sur **DATANN** et que l'on souhaite conserver également les variables en cours, il faut bien ajouter la condition is.na(DATANN).
+
+-   Exclusion des DROM COM : code département **DEPCOM** commençant par 97 ;
+
+-   Comptage des droits distincts indemnisés en France métropolitaine en récupérant une liste d'**id_midas**.
+
+```{r}
+#| eval : false
+### France métropolitaine
+paye <- PJC_p %>% 
+  select(id_midas, KROD3,KDDPJ, KDFPJ, KCPJC, regime) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date & (KCPJC ==1 | KCPJC == 4)) %>% 
+  collect() %>%
+  group_by(id_midas) %>%
+  filter(KDDPJ == max(KDDPJ))  #pour chaque individu indemnisé au jour considéré on ne retient que la PJC ouverte le plus récemment
+
+de_metro <- DE_p %>%
+  select(id_midas,DATINS, DATANN, DEPCOM) %>%
+  filter(DATINS <= date_Date & (DATANN >= date_Date|is.na(DATANN)) & !(substr(DEPCOM, 1,2) == "97")) %>%
+  collect()
+
+paye_regimeFNA_metro <- paye %>% 
+  left_join(de_metro, by = c("id_midas")) %>% 
+  select(id_midas,DATINS, DATANN, DEPCOM, regime) %>% 
+  filter(DATINS <= date_Date & (DATANN >= date_Date|is.na(DATANN)) & !(substr(DEPCOM, 1,2) == "97")) %>% 
+  select(regime) %>% 
+  group_by(regime) %>% 
+  summarise(par_regime = n())%>% 
+  mutate(regime_freq = round(par_regime*100/sum(par_regime),1))  #effectifs et fréquences par régime
+
+paye_regimeFNA_metro
+
+#On ne supprime pas les tables paye_regimeFNA et paye_regimeFNA_metro de l'environnement car elles sont utilisées par la suite
+rm(paye)
+rm(de_metro)
+
+```
+
+## Nombre d'indemnisés en catégorie A, B ou C un mois donné
+
+Pour repérer la catégorie d'un demandeur d'emploi, la table DE du FHS de Midas est utilisée.
+
+La première étape est de sélectionner toutes les demandes d'inscription actives le mois considéré, dont la catégorie **CATREGR** correspond à un demandeur d'emploi immédiatement disponible et à la recherche d'un emploi (modalités 1, 2, 3), c'est-à-dire un demandeur d'emploi en catégorie A, B ou C.
+
+*Remarque :* **CATREGR = 2** ne correspond pas à un demandeur d'emploi en catégorie B par exemple. Pour distinguer au sein des demandeurs d'emploi disponibles immédiatement et à la recherche d'un emploi les catégories A, B et C, il faut utiliser les informations sur l'activité réduite de la table E0 du FHS. Ici ce n'est pas nécessaire car il ne s'agit pas de distinguer les A des B et des C.
+
+Il s'agit ensuite d'apparier cette table avec la table PJC du FNA pour récupérer leurs informations sur l'indemnisation le mois en question. L'appariement ne peut pas se faire au niveau de la demande d'emploi mais uniquement au niveau de l'individu. On récupère dans un premier temps uniquement les individus indemnisés le mois considéré, puis on effectue l'appariement en ne gardant que l'intersection des demandeurs d'emploi inscrits en catégorie A, B ou C ce mois-ci et des allocataires effectivement indemnisés.
+
+#### France entière
+
+```{r}
+#| eval : false
+
+### France entière
+
+#Les demandes d'emploi en catégorie A, B, ou C à Pôle Emploi en fin de mois
+di_ABC <- DE_p %>% 
+  filter(DATINS <= date_Date  & (DATANN >= date_Date |is.na(DATANN)) & (CATREGR == "1" | CATREGR =="2" | CATREGR =="3"))   %>% 
+  collect() %>% 
+  distinct(id_midas)
+
+#Les indemnisés en fin de mois
+paye_tot <-  PJC_p %>% 
+  select(id_midas, KROD3, KDDPJ, KDFPJ, KCPJC) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date & (KCPJC ==1 | KCPJC == 4)) %>% 
+  collect() %>%
+  distinct(id_midas)  
+
+#L'intersection (inner_join) des DE inscrits en A, B ou C et des indemnisés
+paye_ABC <- di_ABC %>% 
+  inner_join(paye_tot, by = c("id_midas")) #le nombre de lignes de la table correspond au nombre de demandeurs d'emploi en catégorie A, B ou C effectivement indemnisés.
+
+print(paste0("Le nombre d'indemnisés en catégorie A, B ou C s'élève à environ ", as.character(nrow(paye_ABC)), " le ", as.character(date_Date)))
+
+rm(di_ABC)
+rm(paye_tot)
+
+```
+
+#### France métropolitaine
+
+L'indicateur est aussi calculé sur le champ restreint à la France métropolitaine : il suffit de retirer les individus dont la commune de résidence **DEPCOM** commence par 97 (DROM COM).
+
+```{r}
+#| eval : false
+### France métropolitaine
+
+#Les demandes d'emploi en catégorie A, B, ou C à Pôle Emploi en fin de mois en France métropolitaine
+di_ABC_metro <- DE_p %>% 
+  filter(DATINS <= date_Date  & (DATANN >= date_Date |is.na(DATANN)) & (CATREGR == "1" | CATREGR =="2" | CATREGR =="3")& !(substr(DEPCOM, 1,2) == "97"))  %>% 
+  collect() %>% 
+  distinct(id_midas)
+
+#Les indemnisés en fin de mois
+paye_tot <-  PJC_p %>% 
+  select(id_midas, KROD3, KDDPJ, KDFPJ, KCPJC) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date & (KCPJC ==1 | KCPJC == 4)) %>% 
+  collect() %>%
+  distinct(id_midas)
+
+#L'intersection (inner_join) des DE inscrits en A, B ou C en France métropolitaine et des indemnisés
+paye_ABC_metro <- di_ABC_metro %>% 
+  inner_join(paye_tot, by = c("id_midas")) 
+
+print(paste0("Le nombre d'indemnisés en catégorie A, B ou C en France métropolitaine s'élève à environ ", as.character(nrow(paye_ABC_metro)), " le ", as.character(date_Date)))
+
+rm(di_ABC_metro)
+rm(paye_tot)
+
+```
+
+## Nombre d'indemnisés en catégorie A, B ou C selon le régime d'indemnisation
+
+### Méthode 1 : à l'ouverture de droit
+
+Pour distinguer les trois régimes d'indemnisation à l'ouverture de droit (assurance chômage, Etat, autres), il est possible d'apparier les informations de la table PJC (les demandeurs d'emploi effectivement indemnisés) avec les informations sur le droit de la table ODD du FNA, l'appariement se fait en utilisant le couple identifiant **id_midas** et **KROD3** de la table PJC qui correspond à la variable **KROD** de la table ODD. La variable **KCRGC** de la table ODD donne le régime d'indemnisation, après avoir repéré comme dans la section précédente les indemnisés en catégorie A, B ou C.
+
+#### France entière
+
+```{r}
+#| eval : false
+### France entière
+
+#Les demandes d'emploi en catégorie A, B, ou C à Pôle Emploi en fin de mois
+di_ABC <- DE_p %>% 
+  filter(DATINS <= date_Date  & (DATANN >= date_Date |is.na(DATANN)) & (CATREGR == "1" | CATREGR =="2" | CATREGR =="3"))   %>% 
+  collect() %>% 
+  distinct(id_midas)
+
+#Les indemnisés en fin de mois
+paye_droit <-  PJC_p %>% 
+  select(id_midas, KROD3, KDDPJ, KDFPJ, KCPJC) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date & (KCPJC ==1 | KCPJC == 4)) %>% 
+  collect() %>%
+  distinct(id_midas, KROD3)
+
+regime_odd <- ODD_p %>%
+  select(id_midas, KROD, KCRGC) %>%
+  collect()
+
+regime_ABC <- di_ABC %>% 
+  inner_join(paye_droit, by = c("id_midas")) %>%
+  rename(KROD = KROD3) %>%
+  left_join(regime_odd, by = c("id_midas", "KROD")) %>% 
+  select(KCRGC) %>% 
+  group_by(KCRGC) %>% 
+  summarise(regime = n())  %>%
+  mutate(prop_regime = regime*100/sum(regime))
+
+regime_ABC
+
+rm(di_ABC)
+rm(paye_droit)
+rm(regime_odd)
+
+```
+
+#### France métropolitaine
+
+L'indicateur est aussi calculé sur le champ restreint à la France métropolitaine : il suffit de retirer les individus dont la commune de résidence **DEPCOM** commence par 97 (DROM COM).
+
+```{r}
+#| eval : false
+###France métropolitaine
+
+paye_droit <-  PJC_p %>% 
+  select(id_midas, KROD3, KDDPJ, KDFPJ, KCPJC) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date & (KCPJC ==1 | KCPJC == 4)) %>% 
+  collect() %>%
+  distinct(id_midas, KROD3) %>% 
+  rename(KROD = KROD3) 
+
+regime_odd <- ODD_p %>%
+  select(id_midas, KROD, KCRGC) %>%
+  collect()
+
+di_ABC_metro <- DE_p %>% 
+  filter(DATINS <= date_Date  & (DATANN >= date_Date |is.na(DATANN)) & (CATREGR == "1" | CATREGR =="2" | CATREGR =="3")& !(substr(DEPCOM, 1,2) == "97")) %>% 
+  collect() %>% 
+  distinct(id_midas)
+
+regime_ABC_metro <- di_ABC_metro %>% 
+  inner_join(paye_droit, by = c("id_midas")) %>%
+  left_join(regime_odd, by = c("id_midas", "KROD")) %>%
+  select(KCRGC) %>% 
+  group_by(KCRGC) %>% 
+  summarise(regime = n()) %>%
+  mutate(prop_regime = regime*100/sum(regime))
+
+regime_ABC_metro
+
+rm(paye_droit)
+rm(regime_odd)
+rm(di_ABC_metro)
+
+```
+
+### Méthode 2 : au moment de l'indemnisation
+
+La deuxième solution consiste à utiliser la variable **regime** qui correspond au régime d'indemnisation associé à chaque allocation.
+
+#### France entière
+
+```{r}
+#| eval : false
+### France entière
+
+#Les demandes d'emploi en catégorie A, B, ou C à Pôle Emploi en fin de mois
+di_ABC <- DE_p %>% 
+  filter(DATINS <= date_Date  & (DATANN >= date_Date |is.na(DATANN)) & (CATREGR == "1" | CATREGR =="2" | CATREGR =="3")) %>% 
+  collect() %>%
+  distinct(id_midas)
+
+#Les indemnisés en fin de mois
+paye_tot <-  PJC_p %>% 
+  select(id_midas, KROD3, KDDPJ, KDFPJ, KCPJC, regime)%>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date & (KCPJC ==1 | KCPJC == 4)) %>% 
+  collect()%>%
+  distinct(id_midas, regime)  
+
+#L'intersection (inner_join) des DE inscrits en A, B ou C et des indemnisés
+regime_ABC <- di_ABC %>% 
+  inner_join(paye_tot, by = c("id_midas")) %>%
+  select(regime) %>% 
+  group_by(regime) %>% 
+  summarise(par_regime = n()) %>% 
+  mutate(regime_freq = round(par_regime*100/sum(par_regime),1))  
+
+regime_ABC
+
+rm(di_ABC)
+rm(paye_tot)
+
+
+```
+
+#### France métropolitaine
+
+L'indicateur est aussi calculé sur le champ restreint à la France métropolitaine : il faut apparier à la table DE du FHS, récupérer la demande d'emploi du mois correspondant (filtre sur les dates de début et de fin de la demande d'emploi **DATINS** et **DATANN**), la commune de l'agence associée **DEPCOM** et exclure les individus dont la commune de résidence **DEPCOM** commence par 97 (DROM COM).
+
+```{r}
+#| eval : false
+### France métropolitaine
+
+#Les demandes d'emploi en catégorie A, B, ou C à Pôle Emploi en fin de mois en France métropolitaine
+di_ABC_metro <- DE_p %>% 
+  filter(DATINS <= date_Date  & (DATANN >= date_Date |is.na(DATANN)) & (CATREGR == "1" | CATREGR =="2" | CATREGR =="3")& !(substr(DEPCOM, 1,2) == "97")) %>% 
+  collect() %>% 
+  distinct(id_midas)
+
+#Les indemnisés en fin de mois
+paye_tot <-  PJC_p %>% 
+  select(id_midas, KROD3, KDDPJ, KDFPJ, KCPJC, regime) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date & (KCPJC ==1 | KCPJC == 4)) %>% 
+  collect() %>%
+  distinct(id_midas, regime)
+
+#L'intersection (inner_join) des DE inscrits en A, B ou C en France métropolitaine et des indemnisés
+regime_ABC_metro <- di_ABC_metro %>% 
+  inner_join(paye_tot, by = c("id_midas")) %>%
+  select(regime) %>% 
+  group_by(regime) %>% 
+  summarise(par_regime = n()) %>% 
+  mutate(regime_freq = round(par_regime*100/sum(par_regime),1))  
+
+regime_ABC_metro
+
+rm(di_ABC_metro)
+rm(paye_tot)
+
+```
+
+## Nombre d'indemnisables toutes catégories confondues un mois donné
+
+### Méthode 1 : avec la table PJC du FNA
+
+Pour donner le nombre d'indemnisables un mois donné, il est possible de repérer les individus qui ont une PJC payée **ou non** dans la table PJC du FNA.
+
+#### France entière
+
+```{r}
+indemnisable <- PJC_p %>% 
+  select(id_midas, KDDPJ, KDFPJ) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date) %>% 
+  collect() %>% 
+  distinct(id_midas)
+
+print(paste0("Le nombre d'indemnisables (à partir de la table PJC du FNA) s'élève à environ ", as.character(nrow(indemnisable)), " le ", as.character(date_Date)))
+
+rm(indemnisable)
+```
+
+#### France métropolitaine
+
+```{r}
+de_metro <- DE_p %>%
+  select(id_midas,DATINS, DATANN, DEPCOM) %>%
+  filter(DATINS <= date_Date & (DATANN >= date_Date|is.na(DATANN)) & !(substr(DEPCOM, 1,2) == "97")) %>%
+  collect()
+
+indemnisable <- PJC_p %>% 
+  select(id_midas, KDDPJ, KDFPJ) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date) %>% 
+  collect() %>% 
+  left_join(de_metro, by = c("id_midas")) %>%
+  filter(!(is.na(DATINS))) %>%
+  distinct(id_midas)
+
+print(paste0("Le nombre d'indemnisables en France métropolitaine (à partir de la table PJC du FNA) s'élève à environ ", as.character(nrow(indemnisable)), " le ", as.character(date_Date)))
+
+rm(indemnisable)
+rm(de_metro)
+
+```
+
+### Méthode 2 : avec la table D2 du FHS
+
+La table D2 du FHS qui recense les périodes indemnisables des demandeurs d'emploi inscrits peut aussi être utilisée : les deux méthodes sont ici comparées.
+
+```{r}
+
+indemnisabled2 <- D2_p %>% 
+  filter(jourdv <= date_Date & jourfv>= date_Date) %>% 
+  collect() %>% 
+  distinct(id_midas)
+
+print(paste0("Le nombre d'indemnisables (à partir de la table D2 du FHS) s'élève à environ ", as.character(nrow(indemnisabled2)), " le ", as.character(date_Date)))
+
+rm(indemnisabled2)
+```
+
+Cette méthode n'est pas recommandée. La table PJC est plus fiable pour les informations concernant l'indemnisation des demandeurs d'emploi.
+
+## Nombre d'indemnisables inscrits en catégorie A, B ou C un mois donné (table PJC)
+
+Pour repérer la catégorie d'un demandeur d'emploi, la table DE du FHS de Midas est utilisée.
+
+La première étape est de sélectionner toutes les demandes d'inscription actives le mois considéré, dont la catégorie **CATREGR** correspond à un demandeur d'emploi immédiatement disponible et à la recherche d'un emploi (modalités 1, 2, 3), c'est-à-dire un demandeur d'emploi en catégorie A, B ou C.
+
+*Remarque :* **CATREGR = 2** ne correspond pas à un demandeur d'emploi en catégorie B par exemple. Pour distinguer au sein des demandeurs d'emploi disponibles immédiatement et à la recherche d'un emploi les catégories A, B et C, il faut utiliser les informations sur l'activité réduite. Ici ce n'est pas nécessaire car il ne s'agit pas de distinguer les A des B et des C.
+
+Il s'agit ensuite d'apparier cette table avec la table PJC du FNA pour récupérer leurs informations sur l'indemnisabilité le mois en question. L'appariement ne peut pas se faire au niveau de la demande d'emploi mais uniquement au niveau de l'individu. On récupère dans un premier temps uniquement les individus indemnisables le mois considéré, puis on effectue l'appariement en ne gardant que l'intersection des demandeurs d'emploi inscrits en catégorie A, B ou C ce mois-ci et des allocataires indemnisables.
+
+#### France entière
+
+```{r}
+### France entière
+#Les demandes d'emploi en catégorie A, B, ou C à Pôle Emploi en fin de mois
+di_ABC <- DE_p %>% 
+  filter(DATINS <= date_Date  & (DATANN >= date_Date |is.na(DATANN)) & (CATREGR == "1" | CATREGR =="2" | CATREGR =="3")) %>% 
+  collect() %>% 
+  distinct(id_midas)
+
+#Les indemnisables en fin de mois
+indem_tot <-  PJC_p %>% 
+  select(id_midas, KROD3, KDDPJ, KDFPJ, KCPJC) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date) %>% 
+  collect() %>%
+  distinct(id_midas)  
+
+#L'intersection (inner_join) des DE inscrits en A, B ou C et des indemnisables
+indem_ABC <- di_ABC %>% 
+  inner_join(indem_tot, by = c("id_midas"))
+
+print(paste0("Le nombre d'indemnisables en catégorie A, B ou C s'élève à environ ", as.character(nrow(indem_ABC)), " le ", as.character(date_Date)))
+
+rm(di_ABC)
+rm(indem_tot)
+
+```
+
+#### France métropolitaine
+
+```{r}
+### France métropolitaine
+#Les demandes d'emploi en catégorie A, B, ou C à Pôle Emploi en fin de mois en France métropolitaine
+di_ABC_metro <- DE_p %>% 
+  filter(DATINS <= date_Date  & (DATANN >= date_Date |is.na(DATANN)) & (CATREGR == "1" | CATREGR =="2" | CATREGR =="3")& !(substr(DEPCOM, 1,2) == "97"))%>% 
+  collect() %>% 
+  distinct(id_midas)
+
+#Les indemnisables en fin de mois
+indem_tot <-  PJC_p %>% 
+  select(id_midas, KROD3, KDDPJ, KDFPJ, KCPJC) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date ) %>% 
+  collect() %>%
+  distinct(id_midas)
+
+#L'intersection (inner_join) des DE inscrits en A, B ou C en France métropolitaine et des indemnisables
+indem_ABC_metro <- di_ABC_metro %>% 
+  inner_join(indem_tot, by = c("id_midas"))  
+
+print(paste0("Le nombre d'indemnisables en catégorie A, B ou C en France métropolitaine s'élève à environ ", as.character(nrow(indem_ABC_metro)), " le ", as.character(date_Date)))
+
+rm(di_ABC_metro)
+rm(indem_tot)
+
+```
+
+## Nombre d'indemnisables toutes catégories confondues un mois donné par régime
+
+La méthode utilisée ici repère le régime au moment de l'indemnisation à l'aide de la variable **regime** de la table PJC qui associe à chaque code allocation le régime correspondant.
+
+#### France entière
+
+```{r}
+### France entière
+indem <- PJC_p %>% 
+  select(id_midas, KROD3,KDDPJ, KDFPJ, KCPJC, regime) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date ) %>% 
+  collect() %>%
+  group_by(id_midas) %>%
+  filter(KDDPJ == max(KDDPJ))  #pour chaque individu indemnisable au jour considéré on ne retient que la PJC ouverte le plus récemment
+
+indem_regimeFNA <- indem %>% 
+  group_by(regime) %>% 
+  summarise(par_regime = n()) %>% 
+  mutate(regime_freq = round(par_regime*100/sum(par_regime),1)) 
+
+indem_regimeFNA
+
+rm(indem)
+
+```
+
+#### France métropolitaine
+
+```{r}
+### France métropolitaine
+indem <-PJC_p %>% 
+  select(id_midas, KROD3,KDDPJ, KDFPJ, KCPJC, regime) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date) %>% 
+  collect() %>%
+  group_by(id_midas) %>%
+  filter(KDDPJ == max(KDDPJ))  #pour chaque individu indemnisable au jour considéré on ne retient que la PJC ouverte le plus récemment
+
+de_metro <- DE_p %>%
+  select(id_midas,DATINS, DATANN, DEPCOM) %>%
+  filter(DATINS <= date_Date & (DATANN >= date_Date|is.na(DATANN)) & !(substr(DEPCOM, 1,2) == "97")) %>%
+  collect()
+
+indem_regimeFNA_metro <- indem %>% 
+  left_join(de_metro, by = c("id_midas")) %>% 
+  select(id_midas,DATINS, DATANN, DEPCOM, regime) %>% 
+  filter(DATINS <= date_Date & (DATANN >= date_Date|is.na(DATANN)) & !(substr(DEPCOM, 1,2) == "97")) %>% 
+  select(regime) %>% 
+  group_by(regime) %>% 
+  summarise(par_regime = n()) %>% 
+  mutate(regime_freq = round(par_regime*100/sum(par_regime),1))  #effectifs et fréquences par régime
+
+indem_regimeFNA_metro
+
+rm(indem)
+rm(de_metro)
+
+```
+
+## Nombre d'indemnisables inscrits en catégorie A, B ou C un mois donné par régime
+
+Pour repérer la catégorie d'un demandeur d'emploi, la table DE du FHS de Midas est utilisée.
+
+La première étape est de sélectionner toutes les demandes d'inscription actives le mois considéré, dont la catégorie **CATREGR** correspond à un demandeur d'emploi immédiatement disponible et à la recherche d'un emploi (modalités 1, 2, 3), c'est-à-dire un demandeur d'emploi en catégorie A, B ou C.
+
+*Remarque :* **CATREGR = 2** ne correspond pas à un demandeur d'emploi en catégorie B par exemple. Pour distinguer au sein des demandeurs d'emploi disponibles immédiatement et à la recherche d'un emploi les catégories A, B et C, il faut utiliser les informations sur l'activité réduite. Ici ce n'est pas nécessaire car il ne s'agit pas de distinguer les A des B et des C.
+
+Il s'agit ensuite d'apparier cette table avec la table PJC du FNA pour récupérer leurs informations sur l'indemnisabilité le mois en question. L'appariement ne peut pas se faire au niveau de la demande d'emploi mais uniquement au niveau de l'individu. On récupère dans un premier temps uniquement les individus indemnisables le mois considéré, puis on effectue l'appariement en ne gardant que l'intersection des demandeurs d'emploi inscrits en catégorie A, B ou C ce mois-ci et des allocataires indemnisables.
+
+La méthode utilisée ici repère le régime au moment de l'indemnisation à l'aide de la variable **regime** de la table PJC qui associe à chaque code allocation le régime correspondant.
+
+#### France entière
+
+```{r}
+### France entière
+#Les demandes d'emploi en catégorie A, B, ou C à Pôle Emploi en fin de mois
+di_ABC <- DE_p %>% 
+  filter(DATINS <= date_Date  & (DATANN >= date_Date |is.na(DATANN)) & (CATREGR == "1" | CATREGR =="2" | CATREGR =="3"))  %>% 
+  collect() %>% 
+  distinct(id_midas)
+
+#Les indemnisables en fin de mois
+indem_tot <-  PJC_p %>% 
+  select(id_midas, KROD3, KDDPJ, KDFPJ, KCPJC, regime) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date ) %>% 
+  collect() %>%
+  distinct(id_midas, regime)  
+
+#L'intersection (inner_join) des DE inscrits en A, B ou C et des indemnisés
+regime_indem_ABC <- di_ABC %>% 
+  inner_join(indem_tot, by = c("id_midas")) %>%
+  select(regime) %>% 
+  group_by(regime) %>% 
+  summarise(par_regime = n()) %>% 
+  mutate(regime_freq = round(par_regime*100/sum(par_regime),1))  #effectifs et fréquences par régime
+
+regime_indem_ABC
+
+rm(di_ABC)
+rm(indem_tot)
+
+```
+
+#### France métropolitaine
+
+```{r}
+### France métropolitaine
+#Les demandes d'emploi en catégorie A, B, ou C à Pôle Emploi en fin de mois en France métropolitaine
+di_ABC_metro <- DE_p %>% 
+  filter(DATINS <= date_Date  & (DATANN >= date_Date |is.na(DATANN)) & (CATREGR == "1" | CATREGR =="2" | CATREGR =="3")& !(substr(DEPCOM, 1,2) == "97"))%>% 
+  collect() %>% 
+  distinct(id_midas)
+
+#Les indemnisables en fin de mois
+indem_tot <- PJC_p %>% 
+  select(id_midas, KROD3, KDDPJ, KDFPJ, KCPJC, regime) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date ) %>% 
+  collect() %>%
+  distinct(id_midas, regime)
+
+#L'intersection (inner_join) des DE inscrits en A, B ou C en France métropolitaine et des indemnisables
+regime_indem_ABC_metro <- di_ABC_metro %>% 
+  inner_join(indem_tot, by = c("id_midas")) %>%
+  select(regime) %>% 
+  group_by(regime) %>% 
+  summarise(par_regime = n()) %>% 
+  mutate(regime_freq = round(par_regime*100/sum(par_regime),1))  #effectifs et fréquences par régime
+
+regime_indem_ABC_metro
+
+rm(di_ABC_metro)
+rm(indem_tot)
+
+```
+
+## Part des indemnisés parmi les indemnisables selon le régime
+
+#### France entière
+
+```{r}
+print(paste0("La proportion d'indemnisés parmi les indemnisables est de ", as.character(round(paye_regimeFNA[1,2]*100/indem_regimeFNA[1,2], 2)), " pour les affiliés au régime d'assurance chômage, de ", as.character(round(paye_regimeFNA[3,2]*100/indem_regimeFNA[3,2], 2)), " pour les affiliés au régime d'Etat et de ", as.character(round(sum(paye_regimeFNA$par_regime)*100/sum(indem_regimeFNA$par_regime), 2)), " dans l'ensemble."))
+```
+
+#### France métropolitaine
+
+```{r}
+print(paste0("La proportion d'indemnisés parmi les indemnisables pour la France métropolitaine est de ", as.character(round(paye_regimeFNA_metro[1,2]*100/indem_regimeFNA_metro[1,2], 2)), " pour les affiliés au régime d'assurance chômage, de ", as.character(round(paye_regimeFNA_metro[3,2]*100/indem_regimeFNA_metro[3,2], 2)), " pour les affiliés au régime d'Etat et de ", as.character(round(sum(paye_regimeFNA_metro$par_regime)*100/sum(indem_regimeFNA_metro$par_regime), 2)), " dans l'ensemble."))
+```
+
+## Nombre d'indemnisés en activité réduite
+
+### Méthode 1 : FNA
+
+On utilise la même méthode que pour les indemnisés en A, B ou C, puis on récupère dans la table PAR du FNA le nombre d'heures d'activité réduite le mois d'intérêt pour l'individu (appariement sur **id_midas**) : **KDMAP** donne le mois et **KDAASP** donne l'année de l'activité réduite.
+
+```{r}
+
+###Les demandeurs d'emploi inscrits en A, B, C en fin de mois
+di_ABC <- DE_p %>% 
+  filter(DATINS <= date_Date  & (DATANN >= date_Date|is.na(DATANN)) & (CATREGR == "1" | CATREGR =="2" | CATREGR =="3")) %>%
+  collect() %>%
+  distinct(id_midas)
+
+###Les indemnisés en fin de mois
+paye_tot<-  PJC_p %>% 
+  select(id_midas, KDDPJ, KDFPJ, KCPJC) %>%
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date & (KCPJC ==1 | KCPJC == 4)) %>%
+  collect() %>%
+  distinct(id_midas)  
+
+###infos sur l'activité réduite
+par <- PAR_p %>%
+  filter(KDAASP == year(date_Date) & KDMAP == month(date_Date)) %>%
+  collect()
+
+###Récupération de l'activité réduite
+di_AR <- di_ABC %>% 
+  inner_join(paye_tot, by = c("id_midas")) %>% 
+  left_join(par, by = c("id_midas")) %>%
+  filter(!(is.na(KDAASP)))
+
+print(paste0("Le nombre d'indemnisés en activité réduite s'élève à environ ", as.character(nrow(di_AR)), " le ", as.character(date_Date)))
+
+rm(di_ABC)
+rm(paye_tot)
+rm(par)
+rm(di_AR)
+```
+
+### Méthode 2 : FHS
+
+Il est également possible de récupérer l'information sur l'activité réduite dans la table E0 du FHS. A titre de comparaison, la méthode est testée ici.
+
+*Remarque :* la différence entre E0 du FHS et PAR du FNA est notamment que E0 ne fournit pas la rémunération de l'activité réduite.
+
+```{r}
+###infos sur l'AR
+e0 <- E0_p %>%
+  collect()
+
+###Les demandeurs d'emploi inscrits en A, B, C et leur activité réduite depuis E0
+di_ABC <- DE_p %>% 
+  filter(DATINS <= date_Date  & (DATANN >= date_Date|is.na(DATANN)) & (CATREGR == "1" | CATREGR =="2" | CATREGR =="3")) %>% 
+  collect() %>%
+  distinct(id_midas) %>% 
+  left_join(e0, by = c("id_midas")) %>% 
+  filter(MOIS == paste0(as.character(year(date_Date)),as.character(month(date_Date)))) 
+
+###Les indemnisés en fin de mois
+paye_tot <-  PJC_p %>% 
+  select(id_midas, KDDPJ, KDFPj, KCPJC) %>% 
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date & (KCPJC ==1 | KCPJC == 4)) %>% 
+  collect() %>%
+  distinct(id_midas)  
+
+di_AR <- di_ABC %>% 
+  inner_join(paye_tot, by = c("id_midas")) 
+
+print(paste0("Le nombre d'indemnisés en activité réduite s'élève à environ ", as.character(nrow(di_AR)), " le ", as.character(date_Date)))
+
+rm(e0)
+rm(di_ABC)
+rm(paye_tot)
+rm(di_AR)
+
+```
+
+## Caractéristiques des indemnisés
+
+Pour connaître les caractéristiques des demandeurs d'emploi indemnisés, il est possible d'apparier les indemnisés repérés dans le FNA avec la table DE du FHS qui contient les variables **SEXE** et **DATNAIS** pour le mois de naissance (et non le jour). L'appariement entre le FNA et le FHS sur l'**id_midas** permet normalement de retrouver les caractéristiques de tous les indemnisés, hors DRE (indemnisés dispensés de recherche d'emploi), mais ce biais est négligeable pour les années récentes car il n'est plus possible de rentrer dans le dispositif depuis 2012. Ce dispositif permettait en effet à des demandeurs d'emploi proches de la retraite de continuer à être indemnisé sans être inscrit à Pôle Emploi jusqu'à leur départ à la retraite. Pour le passé professionnel, utilisation de la variable **passe_pro** de la table CDT construite à partir de **KCMPA** de CDT, le motif de rupture du dernier contrat.
+
+Les indicateurs suivants sont calculés sur le champ des indemnisés affiliés au régime général au dernier jour du mois considéré, qui perçoivent l'ARE ou l'AREF, ce qui correspond au champ sur lequel l'UNEDIC publie ses indicateurs dans [Qui sont les allocataires indemnisés par l'Assurance chômage ?](https://www.unedic.org/sites/default/files/2022-04/Qui-sont-les-allocataires-indemnis%C3%A9s_0.pdf)
+
+### Champ
+
+La cellule suivante permet de constituer le champ des indemnisés affiliés au régime général qui perçoivent l'ARE ou l'AREF.
+
+Il faut renseigner la date du dernier jour du mois dont on veut le profil des indemnisés.
+
+```{r}
+date_Date <- as.Date("2021-06-30")
+
+###Les indemnisés en ARE et AREF au régime général au dernier jour du mois
+paye_tot <-  PJC_p %>% 
+  filter(KDDPJ <= date_Date & KDFPJ >= date_Date & (KCPJC ==1 | KCPJC == 4)) %>% 
+  filter(alloc == "ARE" | alloc =="AREF" | alloc =="ARECG" | alloc == "AREFCG") %>%
+  rename(KROD = KROD3) %>% 
+  collect() %>%
+  distinct(id_midas, KROD) 
+
+###régime
+odd <- ODD_p %>%
+  select(id_midas, KROD, KCRD) %>%
+  collect()
+
+###récupération des demandes d'emploi actives au dernier jour du mois dans le FHS en appariant sur l'id_midas, sélection des variables d'intérêt
+DE <- DE_p %>% 
+  filter(DATINS <= date_Date & (DATANN >= date_Date | is.na(DATANN))) %>% 
+  select(id_midas, SEXE, datnais, DATINS, DATANN) %>% 
+  collect() 
+
+###Comme parfois plusieurs demandes d'emploi ouvertes, on récupère uniquement celle qui a la date d'inscription la plus récente par individu pour se ramener à une table niveau individu avec les caractéristiques du niveau de formation atteint les plus récentes
+champ <- paye_tot %>%
+  left_join(odd, by = c("id_midas","KROD")) %>%
+  filter(KCRD ==00) %>% 
+  distinct(id_midas) %>%
+  left_join(DE, by = c("id_midas")) %>%
+  filter(!(is.na(DATINS))) %>%
+  group_by(id_midas) %>% 
+  filter(DATINS == max(DATINS)) 
+
+rm(paye_tot)
+rm(odd)
+rm(DE)
+```
+
+### Sexe
+
+```{r}
+###Répartition par sexe
+sexe <- champ %>% 
+  group_by(SEXE) %>% 
+  summarise(sexe_eff = n()) %>% 
+  mutate(sexe_freq = sexe_eff*100/sum(sexe_eff))
+
+sexe
+
+rm(sexe)
+```
+
+### Age
+
+```{r}
+###Répartition par classes d'âge
+
+age <- champ %>% 
+  mutate(age = (date_Date-datnais) / 365,
+         age_classe = case_when(age >=15 & age < 25 ~ "15-24",
+                                age >=25 & age < 30 ~ "25-29",
+                                age >=30 & age < 35 ~ "30-34",
+                                age >=35 & age < 40 ~ "35-39",
+                                age >=40 & age < 45 ~ "40-44",
+                                age >=45 & age < 50 ~ "45-49",
+                                age >=50 & age < 55 ~ "50-54",
+                                age >=55 & age < 60 ~ "55-59",
+                                age >= 60 ~ "60+")) %>%
+  group_by(age_classe) %>% 
+  summarise(age_eff = n()) %>% 
+  mutate(age_freq = age_eff*100/sum(age_eff))
+age
+
+rm(age)
+```
+
+### Passé professionnel
+
+Pour récupérer la variable passe_pro de la table CDT, il faut apparier la table de champ avec la table DAL qui contient l'identifiant de la demande d'allocation **KCDA**, puis avec la table CDT sur le couple **id_midas-KCDA** (nommée **KCDA1** dans CDT). Pour plus d'information, se reporter au schéma relationnel des données MiDAS dans la documentation de l'appariement.
+
+```{r}
+### Répartition par motif agrégé de fin du dernier contrat
+passe_pro <-  champ %>% 
+  rename(KROD1 = KROD) %>% 
+  left_join(DAL_p, by = c("id_midas", "KROD1")) %>% 
+  rename(KCDA1 = KCDA) %>% 
+  distinct(id_midas, KROD1, KCDA1) %>% 
+  left_join(CDT_p, by =c("id_midas", "KCDA1")) %>% 
+  distinct(id_midas, KROD1, KCDA1, KCMCA, passe_pro) %>% 
+  filter(passe_pro !="Manquant"& passe_pro != "Autres") %>% 
+  group_by(passe_pro) %>% 
+  summarise(passe_pro_eff = n()) %>% 
+  mutate(passe_pro_freq = passe_pro_eff*100/sum(passe_pro_eff))
+
+passe_pro
+
+rm(passe_pro)
+```
+
+## Nombre d'ouvertures de droit un mois donné
+
+Pour calculer le nombre d'ouvertures de droit au cours d'un mois donné, la méthode recommandée est d'utiliser la table PJC comme suit :
+
+1- Repérer toutes les PJC qui ont un jour sur le mois considéré, c'est-à-dire dont la date de fermeture **KDFPJ** est ultérieure au 1er du mois et dont la date d'ouverture **KDDPJ** est antérieure au dernier du mois ;
+
+2- Récupérer pour tous les droits concernés (identifiés par la variable **KROD**) toutes les PJC de chaque droit ;
+
+3- Identifier la première PJC du droit, celle qui a la date de début **KDDPJ** la plus ancienne pour l'identifiant de droit **KROD** de l'individu **id_midas.** Cette date correspond à l'ouverture effective du droit, comme définie dans les publications des indicateurs UNEDIC ;
+
+4- Filtrer pour ne conserver que les droits dont cette date d'ouverture est comprise entre le 1er et le dernier du mois.
+
+Le champ sur lequel cet indicateur est calculé par l'UNEDIC est l'ensemble des ouvertures de droit au titre de l'ASP, de l'ARE et de l'ATI au cours du mois. La variable **alloc** construite à partir du code allocation **KCALF** de la table PJC est utilisée pour repérer ce type d'ouverture de droit. Pour ne conserver que les ouvertures de droit au régime général, on ne conserve que les ouvertures de droit dont la valeur de **KCRD** de la table ODD est **00**, qui est le cas général.
+
+```{r}
+### Définition des dates de début et de fin du mois considéré
+date_deb <- as.Date("2021-12-01") #date de début du mois sur lequel on veut les ouvertures de droit
+
+date_fin <- as.Date("2021-12-31") #date de fin du mois sur lequel on veut les ouvertures de droit
+
+###ensemble des PJC qui ont au moins un jour sur ce mois
+droit_indemnisable <- PJC_p %>% 
+  select(id_midas, KROD3, KDDPJ, KDFPJ) %>%
+  filter(KDDPJ <= date_fin & KDFPJ >= date_deb) %>% 
+  collect() %>%
+  distinct(id_midas, KROD3) 
+
+###récupération dans la table PJC de toutes les PJC pour tous les droits qui ont au moins un jour sur le mois considéré
+PJC <- PJC_p %>%
+  select(id_midas, KROD3, KDDPJ, KDFPJ, alloc) %>%
+  collect()
+  
+droit_indemnisable_PJCall <- droit_indemnisable %>% 
+  left_join(PJC, by = c("id_midas", "KROD3")) 
+
+ODD <- ODD_p %>% 
+  select(id_midas, KROD, KCRD) %>% 
+  collect()
+
+###on ne garde que la première PJC de chaque droit dont la date de début correspond à la date d'ouverture de droit, puis on ne garde que les droits dont la date d'ouverture est sur le mois considéré et des allocations d'intérêt
+date_OD <- droit_indemnisable_PJCall %>% 
+  group_by(id_midas, KROD3) %>%
+  filter(KDDPJ == min(KDDPJ)) %>% 
+  filter(KDDPJ >= date_deb & KDDPJ <= date_fin & alloc %in% c("ATI", "ARE", "ARECG", "AREFCG", "AREF", "ASP", "ATIF")) %>% 
+  rename("KROD" = "KROD3") %>%
+  left_join(ODD, by = c("id_midas", "KROD")) %>%
+  filter(KCRD ==00)
+
+print(paste0("Au mois de ", as.character(month(date_deb)), "/", as.character(year(date_deb)), ", on compte ", as.character(nrow(date_OD)), " ouvertures de droit au titre de l'ARE, l'ASP ou de l'ATI."))
+
+rm(droit_indemnisable)
+rm(PJC)
+rm(droit_indemnisable_PJCall)
+rm(ODD)
+```
+
+## Montant moyen d'indemnisation à l'ouverture de droit
+
+La variable **KQBPJP** donne le montant brut d'allocation journalière.
+
+Le montant moyen d'indemnisation à l'ouverture de droit du tableau de bord de l'UNEDIC est calculé sur les entrants à l'Assurance chômage en ARE ou ASP hors intermittents du spectacle.
+
+### Méthode 1 : Utilisation de la première PJC payée
+
+La première méthode consiste à :
+
+1\) Repérer les ouvertures de droit un mois donné comme dans la section précédente ;
+
+2\) Récupérer pour ces ouvertures de droit la première PJC payée, si elle existe : une personne peut en effet ouvrir un droit mais se désinscrire avant d'avoir été indemnisé (c'est dû aux différés d'indemnisation, à ce sujet voir l'article UNEDIC dédié) ;
+
+3\) calculer la moyenne des montants des premières PJC payées.
+
+```{r}
+
+### Définition des dates de début et de fin du mois considéré
+date_deb <- as.Date("2021-12-01") #date de début du mois sur lequel on veut les ouvertures de droit
+
+date_fin <- as.Date("2021-12-31") #date de fin du mois sur lequel on veut les ouvertures de droit
+
+###ensemble des PJC qui ont au moins un jour sur ce mois
+droit_indemnisable <- PJC_p %>% 
+  select(id_midas, KROD3, KDDPJ, KDFPJ) %>%
+  filter(KDDPJ <= date_fin & KDFPJ >= date_deb) %>% 
+  collect() %>%
+  distinct(id_midas, KROD3) 
+
+###récupération dans la table PJC de toutes les PJC pour tous les droits qui ont au moins un jour sur le mois considéré
+PJC <- PJC_p %>%
+  select(id_midas, KROD3, KDDPJ, KDFPJ, alloc) %>%
+  collect()
+  
+droit_indemnisable_PJCall <- droit_indemnisable %>% 
+  left_join(PJC, by = c("id_midas", "KROD3")) 
+
+ODD <- ODD_p %>% 
+  select(id_midas, KROD, KCRD, KPJDXP) %>% 
+  collect()
+
+###on ne garde que la première PJC de chaque droit dont la date de début correspond à la date d'ouverture de droit, puis on ne garde que les droits dont la date d'ouverture est sur le mois considéré et des allocations d'intérêt
+date_OD <- droit_indemnisable_PJCall %>% 
+  group_by(id_midas, KROD3) %>%
+  filter(KDDPJ == min(KDDPJ)) %>% 
+  filter(KDDPJ >= date_deb & KDDPJ <= date_fin & alloc %in% c( "ARE", "ARECG", "AREFCG", "AREF", "ASP")) %>% 
+  rename("KROD" = "KROD3") %>%
+  left_join(ODD, by = c("id_midas", "KROD")) %>%
+  filter(KCRD != 28 & KCRD != 29)
+
+OD <- date_OD %>%
+  distinct(id_midas, KROD)
+
+###Repérage de toutes les PJC payées
+PJC <- PJC_p %>%
+  select(id_midas, KROD3, KQBPJP, KCPJC, KDDPJ, alloc) %>%
+  filter(KDDPJ >= date_deb & KCPJC == 1 ) %>%
+  collect()
+
+###Récupération de la première PJC payée non nulle pour le champ
+alloc_ouv <- PJC %>%
+  rename(KROD = KROD3) %>%
+  right_join(OD, by = c("id_midas", "KROD")) %>%
+  group_by(id_midas, KROD) %>%
+  filter(KDDPJ == min(KDDPJ)) %>%
+  filter(KQBPJP >0) %>%
+  summarise(alloc_moy = mean(KQBPJP, na.rm = TRUE))
+
+mean(alloc_ouv$KQBPJP)
+```
+
+### Méthode 2 : calcul de l'allocation journalière à partir du SJR
+
+La deuxième méthode consiste à récupérer le salaire journalier de référence (SJR) dans la table ODD : variable **KQCSJP**, et à calculer l'allocation journalière avec la formule légale à partir de ce SJR. L'avantage de cette méthode est qu'elle permet d'avoir l'AJ à l'ouverture de droit pour toutes les ouvertures de droit, même pour les personnes qui se désinscrivent avant d'avoir été effectivement indemnisées.
+
+```{r}
+
+ODD <- ODD_p %>%
+  select(id_midas, KROD, KQCSJP) %>%
+  collect()
+
+ODD_mois <- date_OD %>%
+  distinct(id_midas, KROD)
+
+calcul_AJ <- ODD %>%
+  right_join(ODD_mois, by = c("id_midas", "KROD")) %>%
+  mutate(AJ = pmin(0.75*KQCSJP, pmax(30.42, pmax(0.57*KQCSJP, 12.47+ 0.404*KQCSJP))))
+
+mean(calcul_AJ$AJ)
+```
+
+## Durée moyenne potentielle d'indemnisation à l'ouverture de droit
+
+La durée moyenne potentielle d'indemnisation à l'ouverture de droit est calculé sur le même champ que le montant moyen d'indemnisation à l'ouverture de droit de la section précédente. La variable **KPJDXP** de la table ODD donne la durée potentielle d'indemnisation à l'ouverture du droit.
+
+```{r}
+
+mean(date_OD$KPJDXP)
+```
+
+## Nombre de reprises de droit un mois donné
+
+Méthode recommandée par l'UNEDIC : repérer les PJC qui ont une PJC sur le même droit espacée d'au moins un jour avec la PJC précédente.
+
+Mise en oeuvre de la méthode UNEDIC :
+
+1- Repérer toutes les PJC qui ont un jour sur le mois considéré, c'est-à-dire dont la date de fermeture **KDFPJ** est ultérieure au 1er du mois et dont la date d'ouverture **KDDPJ** est antérieure au dernier du mois ;
+
+2- Récupérer pour tous les droits concernés (identifiés par la variable **KROD**) toutes les PJC de chaque droit ;
+
+3- ordonner les PJC par date de début croissante ;
+
+4- créer une nouvelle variable **ecart** renseignant l'écart entre la date de début d'une PJC et la date de fin de la PJC précédente ;
+
+5- toutes les PJC pour lesquelles **ecart** est supérieur ou égal à 1 sont des reprises de droit, filtrer celles qui ont un jour sur le mois en question, c'est-à-dire dont la date de fermeture **KDFPJ** est ultérieure au 1er du mois et dont la date d'ouverture **KDDPJ** est antérieure au dernier du mois ;
+
+*Remarque sur les réadmissions :* les réadmissions (convention AC 2006) ouvrent un nouveau droit, tandis que les reprises concernent un seul droit ouvert dans le passé. Sur les réadmissions, voir [Réadmissions](https://www.cgtfapt77.fr/BRH/guide_memento/px/px_11/px11_art5a7.pdf)
+
+```{r}
+### Définition des dates de début et de fin du mois considéré
+date_deb <- as.Date("2021-12-01") 
+
+date_fin <- as.Date("2021-12-31") 
+
+###ensemble des PJC qui ont au moins un jour sur ce mois
+droit_indemnisable <- PJC_p %>% 
+  select(id_midas, KROD3, KDDPJ, KDFPJ) %>% 
+  filter(KDDPJ <= date_fin & KDFPJ >= date_deb) %>% 
+  collect() %>%
+  distinct(id_midas, KROD3)
+
+###récupération dans la table PJC de toutes les PJC pour tous les droits qui ont au moins un jour sur le mois considéré
+PJC<- PJC_p %>%
+  select(id_midas, KROD3, KDDPJ, KDFPJ, alloc) %>%
+  collect()
+
+droit_indemnisable_PJCall <- droit_indemnisable %>% 
+  left_join(PJC, by = c("id_midas", "KROD3")) %>% 
+  rename("KROD" = "KROD3")
+
+ODD <- ODD_p %>% 
+  select(id_midas, KROD, KCRD) %>% 
+  collect()
+
+droit_odd <- droit_indemnisable_PJCall %>% 
+  left_join(ODD, by = c("id_midas", "KROD")) 
+
+###on ne garde que la première PJC de chaque droit dont la date de début correspond à la date d'ouverture de droit, puis on ne garde que les droits dont la date d'ouverture est sur le mois considéré et des allocations d'intérêt + repérage des PJC qui ont au moins un jour d'écart avec la PJC précédente sur le même droit, cad une reprise de droit
+ecart_PJC <- droit_indemnisable_PJCall %>% 
+  arrange(id_midas, KROD, KDDPJ) %>% 
+  group_by(id_midas, KROD) %>% 
+  mutate(ecart = KDDPJ - lag(KDFPJ)-1) %>%
+  filter(ecart > 0) %>% 
+  filter(KDDPJ <= date_fin_timestamp & KDDPJ >= date_deb_timestamp & alloc.x %in% c("ATI", "ARE", "AREF", "ASP", "ATI") & KCRD ==00) 
+
+print(paste0("Le nombre de reprises de droit pour le mois de ",as.character(month(date_deb_timestamp)),"/",as.character(year(date_deb_timestamp)), " est d'environ ", as.character(nrow(ecart_PJC))))
+
+rm(droit_indemnisable)
+rm(PJC)
+rm(droit_indemnisable_PJCall)
+rm(ODD)
+rm(droit_od)
+rm(ecart_PJC)
+```

@@ -1,0 +1,394 @@
+---
+title: "Indicateurs Midas - Allstats"
+author: "Yoan ROBIN"
+date: "15/03/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo = FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(echo = TRUE)
+library(parquetize)
+library(dplyr)
+library(arrow)
+library(haven)
+library(lubridate)
+# install.packages("tidyr")
+library(xlsx)
+library(tidyr)
+```
+
+## Import des données et conversion en parquet
+
+Le programme suivant permet d'enregistrer en parquet les tables sas mises à disposition par le CASD. 
+
+```{r}
+### /!\ à ne faire qu'une fois, une fois les tables enregistrées en parquet passer directement à l'étape suivante
+
+
+table_to_parquet(path_to_table = "//casd.fr/casdfs/Projets/MIDARES/Data/MIDAS_MIDAS_2022T2/CNAF Minima sociaux/2020/cnaf_indiv_1220.sas7bdat", 
+                 path_to_parquet = "C:\\Users\\Public\\Documents\\MiDAS_parquet\\Prestations")
+
+table_to_parquet(path_to_table = "//casd.fr/casdfs/Projets/MIDARES/Data/MIDAS_MIDAS_2022T2/CNAF Ménages/2020/cnaf_menage_1220.sas7bdat", 
+                 path_to_parquet = "C:\\Users\\Public\\Documents\\MiDAS_parquet\\Ménages")
+```
+
+
+
+## Introduction
+
+Le document présent permet de construire des indicateurs cibles à partir du fichier Cnaf des allocataires (Allstat-FR6) compris dans l'appariement Midas, en comparant les résultats obtenus aux cibles publiées par la Cnaf et la Drees à une certaine date. 
+
+```{r}
+#On fixe les chemins pour les bases CNAF
+tables_parquet_cnaf_indiv <- open_dataset("C:/Users/Public/Documents/MiDAS_parquet/Prestations")
+tables_parquet_cnaf_menage <- open_dataset("C:/Users/Public/Documents/MiDAS_parquet/Ménages")
+```
+
+
+*Champ Cnaf :* XXXX
+
+## Nombre de foyers bénéficiaires de la PPA
+
+### Nombre de foyers bénéficiaires de la PPA toute catégorie confondue (sans et avec majoration pour isolement)
+
+Pour calculer le nombre de foyers bénéficiaires, on utilise la table prestation/individu de Allstat-FR6 qui contient les données relatives aux prestations versées chaque mois.
+
+```{r}
+#Nombre de foyers allocataires de la PPA
+nbBPPA <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  #filter(year((DTREFFRE))==2020 & day(DTREFFRE)==12 ) %>% #R confond le mois et le jour
+  filter((PPAVERS!="Pas de Prime d'Activité")) %>% 
+  group_by(DTREFFRE) %>% 
+  summarise(BPPA_menage = n_distinct(id_menage)) %>%
+  collect() %>% 
+  arrange(DTREFFRE)
+
+#Nombre d'individus bénéficiaires de la PPA
+IndBPPAa <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((PPAVERS!="Pas de Prime d'Activité")) %>% 
+  select(DTREFFRE, PANBENAU, PPASITFA, id_menage ) %>% 
+  mutate(nb_ind = case_when(
+    PPASITFA == "Isolé homme" ~ 1 + PANBENAU,
+    PPASITFA == "Isolé femme" ~ 1 + PANBENAU,
+    PPASITFA == "Couple" ~ 2 + PANBENAU, 
+    PPASITFA == "Sans signification ou inconnue" ~ 0
+    )) %>%
+  select(DTREFFRE, PANBENAU, id_menage, nb_ind ) %>% 
+  collect() %>% 
+  distinct(DTREFFRE, id_menage, .keep_all=TRUE) %>% 
+  group_by(DTREFFRE) %>% 
+  summarise(BPPA_ind = sum(nb_ind)) %>%
+  collect() %>% 
+  arrange(DTREFFRE)
+
+#Nombre d'adultes bénéficiaires de la PPA
+IndBPPAb <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((PPAVERS!="Pas de Prime d'Activité")) %>% 
+  select(DTREFFRE, PPASITFA, id_menage ) %>% 
+  mutate(nb_ad = case_when(
+    PPASITFA == "Isolé homme" ~ 1 ,
+    PPASITFA == "Isolé femme" ~ 1 ,
+    PPASITFA == "Couple" ~ 2 , 
+    PPASITFA == "Sans signification ou inconnue" ~ 0
+    )) %>%
+  select(DTREFFRE, id_menage, nb_ad ) %>% 
+  collect() %>% 
+  distinct(DTREFFRE, id_menage, .keep_all=TRUE) %>% 
+  group_by(DTREFFRE) %>% 
+  summarise(BPPA_ind = sum(nb_ad)) %>%
+  collect() %>% 
+  arrange(DTREFFRE)
+
+#Montant des dépenses PPA
+CoutBPPA <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((PPAVERS!="Pas de Prime d'Activité")) %>% 
+  select(DTREFFRE, id_menage, MTPPAVER) %>% 
+  collect() %>% 
+  distinct(id_menage, DTREFFRE, .keep_all = TRUE) %>% 
+  group_by(DTREFFRE) %>% 
+  summarise(BPPA_cout = sum(MTPPAVER)) %>%
+  collect() %>% 
+  arrange(DTREFFRE)
+
+
+#Nombre de foyers bénéficiaires de la PPA par composition familiale
+FamBPPA <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((PPAVERS!="Pas de Prime d'Activité")) %>% 
+  select(DTREFFRE, PANBENAU, PPASITFA, id_menage ) %>% 
+  mutate(FAM = case_when(
+    PPASITFA == "Isolé homme" & PANBENAU > 0 ~ "Homme seul avec enfant",
+    PPASITFA == "Isolé femme" & PANBENAU > 0 ~ "Femme seule avec enfant",
+    PPASITFA == "Isolé homme" & PANBENAU == 0 ~ "Homme seul sans enfant",
+    PPASITFA == "Isolé femme" & PANBENAU == 0 ~ "Femme seule sans enfant",
+    PPASITFA == "Couple" & PANBENAU > 0 ~ "Couple avec enfant", 
+    PPASITFA == "Couple" & PANBENAU == 0 ~ "Couple sans enfant",
+    PPASITFA == "Sans signification ou inconnue" ~ "Sans signification ou inconnue"
+    )) %>%
+  select(DTREFFRE, PANBENAU, id_menage, FAM ) %>% 
+  collect() %>% 
+  distinct(DTREFFRE, id_menage, .keep_all=TRUE) %>% 
+  group_by(DTREFFRE, FAM) %>% 
+  summarise(BPPA_fam = n()) %>%
+  collect() %>% 
+  arrange(DTREFFRE)
+
+```
+
+### Nombre de foyers bénéficiaires de la PPA sans et avec majoration pour isolement
+
+
+```{r}
+#Nombre de foyers allocataires de la PPA
+nbBPPAtype <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  #filter(year((DTREFFRE))==2020 & day(DTREFFRE)==12 ) %>% #R confond le mois et le jour
+  filter((PPAVERS!="Pas de Prime d'Activité")) %>% 
+  group_by(DTREFFRE, PPAVERS) %>% 
+  summarise(BPPAtype_menage = n_distinct(id_menage)) %>%
+  collect() %>% 
+  arrange(DTREFFRE, BPPAtype_menage)
+
+#Nombre d'individus bénéficiaires de la PPA
+IndBPPAtype <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((PPAVERS!="Pas de Prime d'Activité")) %>%   
+  select(DTREFFRE, PANBENAU, PPASITFA, id_menage, PPAVERS) %>% 
+  mutate(nb_ind = case_when(
+    PPASITFA == "Isolé homme" ~ 1 + PANBENAU,
+    PPASITFA == "Isolé femme" ~ 1 + PANBENAU,
+    PPASITFA == "Couple" ~ 2 + PANBENAU, 
+    PPASITFA == "Sans signification ou inconnue" ~ 0
+    )) %>%
+  select(DTREFFRE, PANBENAU, id_menage, nb_ind, PPAVERS) %>% 
+  collect() %>% 
+  distinct(DTREFFRE, id_menage, .keep_all=TRUE) %>% 
+  group_by(DTREFFRE, PPAVERS) %>% 
+  summarise(BPPAtype_ind = sum(nb_ind)) %>%
+  collect() %>% 
+  arrange(DTREFFRE)
+
+
+#Montant des dépenses PPA
+CoutBPPAtype <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((PPAVERS!="Pas de Prime d'Activité")) %>% 
+  select(DTREFFRE, id_menage, MTPPAVER, PPAVERS) %>% 
+  collect() %>% 
+  distinct(id_menage, DTREFFRE, .keep_all = TRUE) %>% 
+  group_by(DTREFFRE, PPAVERS) %>% 
+  summarise(BPPA_cout = sum(MTPPAVER)) %>%
+  collect() %>% 
+  arrange(DTREFFRE)
+```
+
+
+### Nombre de foyers bénéficiaires du RSA et cumul avec d'autres prestations
+
+```{r}
+#base ménage des prestations
+menAllocs <- tables_parquet_cnaf_menage %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>%
+  mutate(APL = case_when(
+    APLVERS == 1 ~ 1,
+    APLVERS != 1 | is.na(APLVERS) ~ 0
+  )) %>%
+  mutate(ALS = case_when(
+    ALSVERS == 1 ~ 1,
+    ALSVERS != 1 | is.na(ALSVERS) ~ 0
+  )) %>%
+  mutate(ALF = case_when(
+    ALFVERS == 1 ~ 1,
+    ALFVERS != 1 | is.na(ALFVERS) ~ 0
+  )) %>%
+  mutate(AF = case_when(
+    MTAFVERS > 0 ~ 1,
+    MTAFVERS ==0 | is.na(MTAFVERS) ~ 0
+  )) %>%
+  mutate(CF = case_when(
+    MTCFVERS > 0 ~ 1,
+    MTCFVERS ==0 | is.na(MTCFVERS) ~ 0
+  )) %>%
+  mutate(PAJE = case_when(
+    PAJEVERS == 1 ~ 1,
+    PAJEVERS != 1 | is.na(PAJEVERS) ~ 0
+  )) %>%
+  select(DTREFFRE, id_menage, APL, ALS, ALF, AF, CF, PAJE) %>%
+filter(!is.na(APL) & !is.na(ALS) & !is.na(ALF) & !is.na(AF) & !is.na(CF) & !is.na(PAJE))
+
+#BPPA et allocs
+nbBPPA_alloc <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((PPAVERS!="Pas de Prime d'Activité")) %>% 
+  mutate(PPA = 1) %>% 
+  mutate(AAH = case_when(
+    AAHVERS != "Pas d'allocation handicapé adulte" ~ 1,
+    AAHVERS == "Pas d'allocation handicapé adulte" ~ 0
+  )) %>%
+  mutate(RSA = case_when(
+    (RSAVERS=="RSA droit commun" |RSAVERS=="RSA droit local" | RSAVERS=="RSA jeune" | RSAVERS=="RSA expérimental") ~ 1,
+    (RSAVERS!="RSA droit commun" & RSAVERS!="RSA droit local" & RSAVERS!="RSA jeune" & RSAVERS!="RSA expérimental") ~ 0
+  )) %>%
+  select(id_menage, DTREFFRE, RSA, AAH, PPA) %>%  
+  left_join(menAllocs, by=c("DTREFFRE", "id_menage")) %>%
+  # right_join(menAllocs, by=c("DTREFFRE", "id_menage")) %>%
+  collect() %>% 
+  mutate(APL = replace_na(APL, 0)) %>%
+  mutate(ALS = replace_na(ALS, 0)) %>%
+  mutate(ALF = replace_na(ALF, 0)) %>%
+  mutate(AF = replace_na(AF, 0)) %>%
+  mutate(CF = replace_na(CF, 0)) %>%
+  mutate(PAJE = replace_na(PAJE, 0)) %>% 
+  mutate(PPA_slt = case_when(
+    APL+ALS+ALF+AF+CF+PAJE+RSA+AAH == 0 ~ 1,
+    APL+ALS+ALF+AF+CF+PAJE+RSA+AAH > 0 ~ 0
+  )) %>%
+  distinct(DTREFFRE, id_menage, .keep_all = TRUE) %>% 
+    group_by(DTREFFRE) %>% 
+  summarise(BPPAAPL = sum(APL, na.rm = TRUE), 
+            BPPRSAALS = sum(ALS, na.rm = TRUE),
+            BPPAALF = sum(ALF, na.rm = TRUE),
+            BPPAAF = sum(AF, na.rm = TRUE),
+            BPPRSACF = sum(CF, na.rm = TRUE),
+            BPPAPAJE = sum(PAJE, na.rm = TRUE),
+            BPPARSA = sum(RSA, na.rm = TRUE),
+            BPPAAAH = sum(AAH, na.rm = TRUE),
+            BPPAslt = sum(PPA_slt, na.rm = TRUE)) %>%
+  collect() %>% 
+  arrange(DTREFFRE)
+
+
+
+
+```
+
+### Âge du responsable de dossier des foyers allocataires du RSA
+
+
+```{r}
+#création de la base ménage avec l'âge
+menAge <- tables_parquet_cnaf_menage %>% 
+  select(DTREFFRE, NORDALLC, NUMCAF, SEXE, DTNAIRES) %>%
+  # filter(!is.na(SEXE)) %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>%
+  mutate(DTNAIRES = as.Date(DTNAIRES)) %>%
+  mutate(AGE = ((DTREFFRE-DTNAIRES))) %>% 
+  collect() %>% 
+  mutate(Age_t = case_when(
+    AGE/31557600 < 25 ~ "moins de 25 ans", #on divise du nombre de seconde par an
+    25 <= AGE/31557600 & AGE/31557600 < 30 ~ "De 25 à 29 ans",
+    30 <= AGE/31557600 & AGE/31557600 < 40 ~ "De 30 à 39 ans",
+    40 <= AGE/31557600 & AGE/31557600 < 50 ~ "De 40 à 49 ans",
+    50 <= AGE/31557600 & AGE/31557600 < 55 ~ "De 50 à 54 ans",
+    55 <= AGE/31557600 & AGE/31557600 < 60 ~ "De 55 à 59 ans",
+    60 <= AGE/31557600 & AGE/31557600 < 65 ~ "De 60 à 64 ans",
+    AGE/31557600 >= 65 ~ "65 ans ou plus"
+  )) %>% 
+  collect() 
+
+
+
+Age_PPA <- tables_parquet_cnaf_indiv %>%
+  filter((PPAVERS!="Pas de Prime d'Activité")) %>%
+  select(DTREFFRE, NORDALLC, NUMCAF) %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  collect() %>% 
+  left_join(menAge, by=c("DTREFFRE", "NUMCAF", "NORDALLC")) %>% 
+  mutate(id_menage = paste0(NORDALLC, NUMCAF)) %>%
+  select(DTREFFRE, id_menage, SEXE, Age_t) %>% 
+  # filter(!is.na(SEXE)) %>% 
+  group_by(DTREFFRE, Age_t) %>% 
+  summarise(somme_age = n_distinct(id_menage)) %>%
+  # summarise(somme_age = n()) %>%
+  collect() %>% 
+  arrange(DTREFFRE, Age_t)
+
+test <- menAge %>% 
+  group_by(DTREFFRE) %>% 
+  summarise(somme = n_distinct(NORDALLC, NUMCAF)) %>% 
+  arrange(DTREFFRE) %>% 
+  collect()
+
+test <- Age_PPA %>% 
+  group_by(DTREFFRE) %>% 
+  summarise(somme = n_distinct(id_menage)) %>% 
+  arrange(DTREFFRE) %>% 
+  collect()
+
+test <- Age_PPA %>% 
+  group_by(DTREFFRE) %>% 
+  summarise(sum(somme_age)) %>% 
+  collect()
+
+```
+
+
+
+
+### Taux d'entrée et de sortie de la PPA
+
+Le taux d'entrée se calcule comme la part des bénéficiaires en décembre d'une année, qui n'étaient pas bénéficiaires en décembre de l'année précédente.
+Le taux de sortie se calcule comme la part des bénéficiaires en décembre d'une année, qui ne sont plus bénéficiaires en décembre de l'année suivante.
+
+
+
+```{r}
+
+#PPA
+entreePPA <-  tables_parquet_cnaf_indiv %>%  
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((PPAVERS!="Pas de Prime d'Activité") & year(DTREFFRE)==2020 & day(DTREFFRE)==12) #R confond le mois et le jour
+
+nbentreePPA <-  entreePPA %>% 
+  summarise(RSA2020 = n_distinct(id_menage)) %>%
+  collect()
+
+entreePPA2020 <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((PPAVERS!="Pas de Prime d'Activité") & year(DTREFFRE)==2019 & day(DTREFFRE)==12) %>% #R confond le mois et le jour
+  right_join(entreePPA, by =c("id_menage")) %>% 
+  summarise(PPA2020_2019 = n_distinct(id_menage)) %>%
+  collect() %>% 
+  cbind(nbentreePPA) %>% 
+  mutate(p=1-(PPA2020_2019/PPA2020)) %>% 
+  collect()
+
+#PPA
+sortiePPA <-  tables_parquet_cnaf_indiv %>%  
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>%
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  filter((PPAVERS!="Pas de Prime d'Activité") & year(DTREFFRE)==2019 & day(DTREFFRE)==12) 
+
+PPA2019 <-  sortiePPA %>% 
+  summarise(PPA2020 = n_distinct(id_menage)) %>%
+  collect()
+
+sortiePPA2020 <- tables_parquet_cnaf_indiv %>% 
+  mutate(DTREFFRE = ydm(as.Date(DTREFFRE))) %>%
+  filter((PPAVERS!="Pas de Prime d'Activité") & year(DTREFFRE)==2020 & day(DTREFFRE)==12) %>% 
+  mutate(id_menage = paste0(NORDALLC,NUMCAF)) %>% #on crée un identifiant unique ménage + CAF
+  right_join(sortiePPA, by =c("id_menage")) %>% 
+  summarise(PPA2020_2019 = n_distinct(id_menage)) %>%
+  collect() %>% 
+  cbind(PPA2019) %>% 
+  mutate(p=1-(PPA2020_2019/PPA2019)) %>% 
+  collect()
+
+```
